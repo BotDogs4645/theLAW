@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import config
-from utils import data_loader
+from utils import data_loader, database
 
 class VerificationBot(commands.Bot):
     def __init__(self, *args, **kwargs):
@@ -22,7 +22,15 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     guild = bot.get_guild(config.GUILD_ID)
     if guild:
-        bot.verified_role = guild.get_role(config.VERIFIED_ROLE_ID)
+        # fetch the role and check if it was found
+        role = guild.get_role(config.VERIFIED_ROLE_ID)
+        if role:
+            bot.verified_role = role
+            print(f"Successfully found Verified Role: '{role.name}' ({role.id})")
+        else:
+            print(f"ERROR: VERIFIED_ROLE_ID '{config.VERIFIED_ROLE_ID}' not found in the server. Please check your .env file.")
+    else:
+        print(f"ERROR: GUILD_ID '{config.GUILD_ID}' not found. The bot cannot see the server.")
 
     if config.VERIFICATION_CHANNEL_ID:
         await setup_verification_channel()
@@ -68,13 +76,13 @@ async def setup_verification_channel():
         print(f"Failed during on_ready message setup: {e}")
 
 async def main():
-    # load all cogs from the 'cogs' directory
-    for filename in os.listdir('./cogs'):
-        if filename.endswith('.py'):
-            await bot.load_extension(f'cogs.{filename[:-3]}')
-    
-    await bot.start(config.TOKEN)
+    async with bot:
+        for filename in os.listdir('./cogs'):
+            if filename.endswith('.py'):
+                await bot.load_extension(f'cogs.{filename[:-3]}')
+        await bot.start(config.TOKEN)
 
 if __name__ == "__main__":
     import asyncio
+    database.setup_database()
     asyncio.run(main())

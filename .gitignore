@@ -218,3 +218,4 @@ __marimo__/
 .env
 students.csv
 roles.json
+verified_users.db
