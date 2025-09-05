@@ -255,3 +255,20 @@ def delete_student(email: str) -> bool:
     except sqlite3.Error as e:
         logger.error(f"Error deleting student: {e}")
         return False
+
+def delete_verified_user(discord_id: int) -> bool:
+    """delete a verified user by Discord ID"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM verified_users WHERE discord_id = ?", (discord_id,))
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Deleted verified user with Discord ID: {discord_id}")
+                return True
+            else:
+                logger.info(f"No verified user found with Discord ID: {discord_id}")
+                return False
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting verified user: {e}")
+        return False
