@@ -219,3 +219,5 @@ __marimo__/
 students.csv
 roles.json
 verified_users.db
+.idea
+auto_replies.yml
