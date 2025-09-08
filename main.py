@@ -115,6 +115,12 @@ class VerificationBot(commands.Bot):
             if filename.endswith('.py') and not filename.startswith('__'):
                 try:
                     cog_name = filename[:-3]
+                    
+                    # skip AI mention cog if disabled
+                    if cog_name == 'ai_mention' and not config.AI_ENABLED:
+                        self.logger.info(f"Skipped cog: {cog_name} (AI_ENABLED=False)")
+                        continue
+                    
                     await self.load_extension(f'cogs.{cog_name}')
                     cog_count += 1
                     self.logger.info(f"Loaded cog: {cog_name}")

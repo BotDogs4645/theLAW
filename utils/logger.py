@@ -6,8 +6,18 @@ from typing import Optional
 # configure logging 
 def setup_logging():
     """set up logging configuration for the bot"""
+    # Resolve log level from config (default INFO)
+    level_name = (getattr(config, 'LOG_LEVEL', 'INFO') or 'INFO').upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    # Remove existing handlers so we can reconfigure cleanly
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        for h in list(root_logger.handlers):
+            root_logger.removeHandler(h)
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler('bot.log'),

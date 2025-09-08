@@ -69,12 +69,25 @@ class AutoReplyCog(BaseCog):
             if trigger.lower() in content_lower:
                 return trigger
         return None
+
+    def get_hint_for_message(self, message_content: str) -> Optional[str]:
+        """Return the auto-reply text for the first matching trigger, if any.
+
+        This is used by the AI cog to seed a SYSTEM hint when the bot is mentioned.
+        """
+        trigger = self.find_trigger(message_content)
+        if trigger:
+            return self.responses.get(trigger)
+        return None
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen for messages and respond if they contain configured triggers"""
         # ignore messages from bots to prevent infinite loops
         if message.author.bot:
+            return
+        # if the bot is mentioned, let the AI cog handle it to prevent double replies
+        if self.bot.user in getattr(message, "mentions", []):
             return
         
         # find matching trigger

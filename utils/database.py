@@ -55,6 +55,19 @@ def setup_database():
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    memory_key TEXT NOT NULL UNIQUE,
+                    memory_content TEXT NOT NULL,
+                    memory_type TEXT NOT NULL DEFAULT 'general',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    created_by_discord_id INTEGER,
+                    is_active BOOLEAN NOT NULL DEFAULT 1
+                )
+            """)
+            
             conn.commit()
         logger.info("Database setup complete with the new schema.")
     except sqlite3.Error as e:
@@ -272,3 +285,127 @@ def delete_verified_user(discord_id: int) -> bool:
     except sqlite3.Error as e:
         logger.error(f"Error deleting verified user: {e}")
         return False
+
+# AI Memory Management Functions
+def add_ai_memory(memory_key: str, memory_content: str, memory_type: str = "general", created_by_discord_id: int = None) -> bool:
+    """Add a new AI memory"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            
+            cursor.execute("""
+                INSERT INTO ai_memories (memory_key, memory_content, memory_type, created_at, updated_at, created_by_discord_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (memory_key, memory_content, memory_type, now_iso, now_iso, created_by_discord_id))
+            conn.commit()
+            logger.info(f"Added AI memory: {memory_key}")
+            return True
+    except sqlite3.IntegrityError:
+        logger.warning(f"Memory key already exists: {memory_key}")
+        return False
+    except sqlite3.Error as e:
+        logger.error(f"Error adding AI memory: {e}")
+        return False
+
+def get_ai_memory(memory_key: str) -> Optional[dict]:
+    """Get an AI memory by key"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM ai_memories WHERE memory_key = ? AND is_active = 1", (memory_key,))
+            result = cursor.fetchone()
+            return dict(result) if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Error getting AI memory: {e}")
+        return None
+
+def update_ai_memory(memory_key: str, memory_content: str, memory_type: str = None) -> bool:
+    """Update an existing AI memory"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            
+            if memory_type:
+                cursor.execute("""
+                    UPDATE ai_memories 
+                    SET memory_content = ?, memory_type = ?, updated_at = ?
+                    WHERE memory_key = ? AND is_active = 1
+                """, (memory_content, memory_type, now_iso, memory_key))
+            else:
+                cursor.execute("""
+                    UPDATE ai_memories 
+                    SET memory_content = ?, updated_at = ?
+                    WHERE memory_key = ? AND is_active = 1
+                """, (memory_content, now_iso, memory_key))
+            
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Updated AI memory: {memory_key}")
+                return True
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Error updating AI memory: {e}")
+        return False
+
+def delete_ai_memory(memory_key: str) -> bool:
+    """Soft delete an AI memory (set is_active to 0)"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            
+            cursor.execute("""
+                UPDATE ai_memories 
+                SET is_active = 0, updated_at = ?
+                WHERE memory_key = ?
+            """, (now_iso, memory_key))
+            
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Deleted AI memory: {memory_key}")
+                return True
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting AI memory: {e}")
+        return False
+
+def get_all_ai_memories(memory_type: str = None) -> List[dict]:
+    """Get all active AI memories, optionally filtered by type"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if memory_type:
+                cursor.execute("""
+                    SELECT * FROM ai_memories 
+                    WHERE memory_type = ? AND is_active = 1 
+                    ORDER BY updated_at DESC
+                """, (memory_type,))
+            else:
+                cursor.execute("""
+                    SELECT * FROM ai_memories 
+                    WHERE is_active = 1 
+                    ORDER BY updated_at DESC
+                """)
+            results = cursor.fetchall()
+            return [dict(row) for row in results]
+    except sqlite3.Error as e:
+        logger.error(f"Error getting AI memories: {e}")
+        return []
+
+def search_ai_memories(search_term: str) -> List[dict]:
+    """Search AI memories by content"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ai_memories 
+                WHERE (memory_content LIKE ? OR memory_key LIKE ?) AND is_active = 1 
+                ORDER BY updated_at DESC
+            """, (f"%{search_term}%", f"%{search_term}%"))
+            results = cursor.fetchall()
+            return [dict(row) for row in results]
+    except sqlite3.Error as e:
+        logger.error(f"Error searching AI memories: {e}")
+        return []
