@@ -496,7 +496,7 @@ class AIMentionCog(BaseCog):
                             + "\n\n"
                             + prompt
                             + function_context
-                            + "\n\nBased on the additional context above, respond to the user's question. Do NOT call think_harder or fetch_more_messages again. Only call upload_code_file if you need to share code longer than 5 lines. Answer directly using the handbook context:"
+                            + "\n\nBased on the additional context above, respond to the user's question. Do NOT call think_harder or fetch_more_messages again. Only call upload_code_file if you need to share code longer than 5 lines. You may find the handbook useful:"
                         )
                     else:
                         enhanced_prompt = prompt + function_context + "\n\nBased on the additional context above, respond to the user's question. Do NOT call any more functions - just give your response:"
@@ -763,7 +763,7 @@ class AIMentionCog(BaseCog):
                 if handbook_excerpt:
                     prompt = (
                         f"{prompt}\n\n### Relevant Handbook Excerpt (from experience.md):\n"
-                        f"{handbook_excerpt}\n\nUse the above excerpt to answer the user's question with specific, concrete tips."
+                        f"{handbook_excerpt}\n\nThe above excerpt MAY be helpful, but if it's unrelated don't use it."
                     )
             except Exception:
                 pass
