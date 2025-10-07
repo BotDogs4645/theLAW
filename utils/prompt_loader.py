@@ -10,7 +10,11 @@ def load_prompt(prompt_name: str) -> str:
     prompt_file = prompts_dir / f"{prompt_name}.md"
     
     if not prompt_file.exists():
-        raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
+        # fallback for when running from a different working directory
+        prompts_dir = Path.cwd() / "prompts"
+        prompt_file = prompts_dir / f"{prompt_name}.md"
+        if not prompt_file.exists():
+            raise FileNotFoundError(f"Prompt file not found in primary or fallback path: {prompt_file}")
     
     with open(prompt_file, 'r', encoding='utf-8') as f:
         return f.read().strip()
@@ -20,13 +24,20 @@ def load_generic_prompt() -> str:
     return load_prompt("generic")
 
 def load_lite_model_prompt() -> str:
-    """Load the lite model specific prompt"""
-    return load_prompt("lite_model")
+    """Load the complete prompt for the lite model."""
+    generic_prompt = load_generic_prompt()
+    lite_instructions = load_prompt("lite_model")
+    return f"{generic_prompt}\n\n{lite_instructions}"
 
 def load_advanced_model_prompt() -> str:
-    """Load the advanced model specific prompt"""
-    return load_prompt("advanced_model")
+    """Load the complete prompt for the advanced model."""
+    generic_prompt = load_generic_prompt()
+    advanced_instructions = load_prompt("advanced_model")
+    return f"{generic_prompt}\n\n{advanced_instructions}"
 
 def load_experience_prompt() -> str:
     """Load the FRC experience handbook prompt"""
-    return load_prompt("experience")
+    try:
+        return load_prompt("experience")
+    except FileNotFoundError:
+        return ""

@@ -63,12 +63,22 @@ class VerificationBot(commands.Bot):
             
             async for message in channel.history(limit=20):
                 if message.author == self.user:
-                    if message.embeds and message.embeds[0].title == config.RULES_TITLE:
-                        rules_found = True
-                    if (message.components and 
-                        any(isinstance(c, discord.ui.Button) and c.custom_id == "persistent_verify_button" 
-                            for row in message.components for c in row.children)):
-                        verify_found = True
+                    # detect rules embed by title
+                    if message.embeds:
+                        if any(embed.title == config.RULES_TITLE for embed in message.embeds):
+                            rules_found = True
+                        # detect verification embed by title as primary signal
+                        if any(embed.title == config.EMBED_TITLE for embed in message.embeds):
+                            verify_found = True
+                    # fallback: detect verification button by custom_id without relying on class types
+                    if not verify_found and message.components:
+                        try:
+                            if any(getattr(component, 'custom_id', None) == "persistent_verify_button"
+                                   for row in message.components
+                                   for component in getattr(row, 'children', [])):
+                                verify_found = True
+                        except Exception:
+                            pass
 
             # post rules embed if not found
             if not rules_found:

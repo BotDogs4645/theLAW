@@ -70,7 +70,7 @@ RULES_COLOR = get_hex_color_env("RULES_COLOR", 0xFF8C00)  # Orange color
 AI_ENABLED = get_bool_env("AI_ENABLED", False)
 AI_PROVIDER = get_optional_env("AI_PROVIDER", "gemini")  # "gemini" or "local"
 AI_GEMINI_API_KEY = get_optional_env("AI_GEMINI_API_KEY")
-AI_GEMINI_MODEL = get_optional_env("AI_GEMINI_MODEL", "gemini-2.5-flash-lite")  # 2.5 Flash Lite for regular responses
+AI_GEMINI_MODEL = get_optional_env("AI_GEMINI_MODEL", "gemini-2.5-flash-lite")      
 AI_GEMINI_PRO_MODEL = get_optional_env("AI_GEMINI_PRO_MODEL", "gemini-2.5-flash")  # 2.5 Flash model for complex problems
 AI_MAX_TOKENS = get_int_env("AI_MAX_TOKENS", 100)
 AI_MAX_TOKENS_PRO = get_int_env("AI_MAX_TOKENS_PRO", 500)  # Higher token limit for pro model
@@ -80,6 +80,7 @@ AI_TOP_P = float(get_optional_env("AI_TOP_P", "0.9"))
 AI_TOP_P_PRO = float(get_optional_env("AI_TOP_P_PRO", "0.8"))  # Slightly lower for more focused responses
 AI_REPETITION_PENALTY = float(get_optional_env("AI_REPETITION_PENALTY", "1.1"))
 AI_INCLUDE_EXPERIENCE = get_bool_env("AI_INCLUDE_EXPERIENCE", True)
+AI_INCLUDE_FOOTER = get_bool_env("AI_INCLUDE_FOOTER", False)  # Whether to append timing/token footer to replies
 
 # Logging configuration
 LOG_LEVEL = get_optional_env("LOG_LEVEL", "INFO")
@@ -92,47 +93,29 @@ AI_USE_GPU = get_bool_env("AI_USE_GPU", True)
 
 # AI System Prompt
 def _load_system_prompt():
-    """Load the system prompt from files"""
+    """Load the system prompt from files."""
     try:
         generic = load_generic_prompt()
         lite_specific = load_lite_model_prompt()
-        if AI_INCLUDE_EXPERIENCE:
-            try:
-                experience = load_experience_prompt()
-            except FileNotFoundError:
-                experience = ""
-        else:
-            experience = ""
         parts = [generic, lite_specific]
-        if experience:
-            parts.append(experience)
         return "\n\n".join([p for p in parts if p])
     except FileNotFoundError:
         # Fallback to hardcoded prompt if files don't exist
-        return """You are **the LAW**, a mischievous presence created by First Robotics Competition (FRC) Team 4645."""
+        return """You are **the LAW**, a knowledgeable FRC mentor for Team 4645. Be concise, helpful, and professional."""
 
 AI_SYSTEM_PROMPT = get_optional_env("AI_SYSTEM_PROMPT", _load_system_prompt())
 
-# AI Advanced System Prompt (for complex coding problems)
+# AI Advanced System Prompt
 def _load_advanced_system_prompt():
-    """Load the advanced system prompt from files"""
+    """Load the advanced system prompt from files."""
     try:
         generic = load_generic_prompt()
         advanced_specific = load_advanced_model_prompt()
-        if AI_INCLUDE_EXPERIENCE:
-            try:
-                experience = load_experience_prompt()
-            except FileNotFoundError:
-                experience = ""
-        else:
-            experience = ""
         parts = [generic, advanced_specific]
-        if experience:
-            parts.append(experience)
         return "\n\n".join([p for p in parts if p])
     except FileNotFoundError:
         # Fallback to hardcoded prompt if files don't exist
-        return """You are **the LAW**, a knowledgeable presence created by First Robotics Competition (FRC) Team 4645."""
+        return """You are **the LAW**, an expert FRC mentor for Team 4645. Be accurate, concise, and respectful."""
 
 AI_ADVANCED_SYSTEM_PROMPT = get_optional_env("AI_ADVANCED_SYSTEM_PROMPT", _load_advanced_system_prompt())
 

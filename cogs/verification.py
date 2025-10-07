@@ -6,6 +6,7 @@ from utils.logger import log_attempt
 from utils import database
 from utils.cog_base import BaseCog
 import config
+from typing import Optional
 
 
 class VerificationModal(Modal, title="Verify Your Identity"):    
@@ -36,7 +37,7 @@ class VerificationModal(Modal, title="Verify Your Identity"):
         return embed
 
     def validate_inputs(self, name_input: str, email_input: str) -> tuple[bool, str]:
-        # alidate email format
+        # validate email format
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         if not re.match(email_pattern, email_input):
             return False, "Please enter a valid email address."
@@ -143,7 +144,7 @@ class VerificationModal(Modal, title="Verify Your Identity"):
         outcome = f"Roles assigned: {', '.join(roles_added_names)}." if roles_added_names else "No additional roles assigned."
         await log_attempt(self.bot, interaction, f"{name_input} ({email_input})", f"{outcome}{nickname_status}", success=True)
 
-    def _find_student_by_email(self, email_input: str) -> dict | None:
+    def _find_student_by_email(self, email_input: str) -> Optional[dict]:
         """Find student data by email address"""
         for student in self.bot.students.values():
             if student.get('email', '').lower() == email_input:

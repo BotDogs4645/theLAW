@@ -1,13 +1,20 @@
 """
-Function calling framework for AI to execute functions
+Function calling framework for AI to execute functions.
+This file is written for the modern 'google-genai' SDK.
 """
 import asyncio
 import time
 import json
 import re
-from typing import Dict, List, Any, Optional, Callable
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Set
 from utils import database, logger
+import logging
+from utils.enums import SubTeam
 import discord
+import aiohttp
+
+from google.genai import types
 
 class FunctionCaller:
     """Handles function calling for AI responses"""
@@ -17,510 +24,461 @@ class FunctionCaller:
         self.logger = logger.get_logger(__name__)
         self.functions = {}
         self._register_functions()
+        try:
+            root_level = logging.getLogger().getEffectiveLevel()
+            if root_level > logging.INFO:
+                names = {getattr(h, 'name', None) for h in self.logger.handlers}
+                if 'fc_stream' not in names:
+                    sh = logging.StreamHandler()
+                    sh.setLevel(logging.INFO)
+                    sh.set_name('fc_stream')
+                    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                    sh.setFormatter(fmt)
+                    self.logger.addHandler(sh)
+                if 'fc_file' not in names:
+                    fh = logging.FileHandler('bot.log')
+                    fh.setLevel(logging.INFO)
+                    fh.set_name('fc_file')
+                    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                    fh.setFormatter(fmt)
+                    self.logger.addHandler(fh)
+                # prevent double logging if root later drops to INFO
+                self.logger.propagate = False
+        except Exception:
+            # Fail open; logging should not break bot
+            pass
+    
+    def _stringify_for_log(self, data: Any) -> str:
+        """Best-effort stringify for logging without raising serialization errors."""
+        try:
+            return json.dumps(data, ensure_ascii=False, default=str)
+        except Exception:
+            return str(data)
     
     def _register_functions(self):
         """Register all available functions"""
         self.functions = {
             "fetch_more_messages": self._fetch_more_messages,
-            "add_memory": self._add_memory,
-            "update_memory": self._update_memory,
-            "remove_memory": self._remove_memory,
-            "get_memory": self._get_memory,
-            "search_memories": self._search_memories,
-            "list_memories": self._list_memories,
+            # "add_memory": self._add_memory,
+            # "update_memory": self._update_memory,
+            # "remove_memory": self._remove_memory,
+            # "get_memory": self._get_memory,
+            # "search_memories": self._search_memories,
+            # "list_memories": self._list_memories,
             "think_harder": self._think_harder,
             "upload_code_file": self._upload_code_file,
-            "read_attachment_file": self._read_attachment_file
+            "read_attachment_file": self._read_attachment_file,
+            "sports_search_teams": self._sports_search_teams,
+            "sports_lookup_team": self._sports_lookup_team,
+            "sports_team_next_events": self._sports_team_next_events,
+            "sports_team_last_results": self._sports_team_last_results,
+            "sports_search_players": self._sports_search_players,
+            "sports_lookup_event": self._sports_lookup_event,
+            "sports_search_events": self._sports_search_events,
+            "sports_league_table": self._sports_league_table,
+            "get_schedule_today": self._get_schedule_today,
+            "get_schedule_date": self._get_schedule_date,
+            "get_next_meeting": self._get_next_meeting,
+            "find_meeting": self._find_meeting,
+            "get_meeting_notes": self._get_meeting_notes,
         }
-    
-    async def _fetch_more_messages(self, channel_id: int, limit: int = 10, before_message_id: int = None) -> Dict[str, Any]:
-        """Fetch more messages from a channel by scrolling up"""
+
+    async def _http_get_json(self, url: str, params: Optional[Dict[str, Any]] = None, timeout_seconds: float = 10.0) -> Dict[str, Any]:
+        """Perform an HTTP GET and parse JSON with error handling."""
         try:
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                return {"success": False, "error": f"Channel {channel_id} not found"}
-            
-            messages = []
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=timeout_seconds) as resp:
+                    status = resp.status
+                    text = await resp.text()
+                    if status != 200:
+                        return {"success": False, "error": f"HTTP {status}", "status": status, "body": text[:500]}
+                    try:
+                        data = json.loads(text)
+                    except Exception:
+                        data = await resp.json(content_type=None)
+                    return {"success": True, "status": status, "data": data}
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "Request timed out"}
+        except Exception as e:
+            self.logger.error(f"HTTP GET failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    @property
+    def _sports_api_base(self) -> str:
+        return "https://www.thesportsdb.com/api/v1/json/123"
+
+    def _trim_list(self, items: Optional[List[Any]], limit: Optional[int]) -> List[Any]:
+        if not items: return []
+        if isinstance(limit, int) and limit > 0: return items[:limit]
+        return items
+
+    def _normalize_team(self, t: Dict[str, Any]) -> Dict[str, Any]:
+        return {"id": t.get("idTeam"), "name": t.get("strTeam"), "league": t.get("strLeague")}
+
+    def _normalize_event(self, e: Dict[str, Any]) -> Dict[str, Any]:
+        return {"id": e.get("idEvent"), "date": e.get("dateEvent"), "home_team": e.get("strHomeTeam"), "away_team": e.get("strAwayTeam"), "home_score": e.get("intHomeScore"), "away_score": e.get("intAwayScore"), "status": e.get("strStatus")}
+
+    async def _sports_search_teams(self, query: str) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/searchteams.php", params={"t": query})
+        if not res.get("success"): return res
+        teams = res.get("data", {}).get("teams") or []
+        return {"success": True, "count": len(teams), "teams": [self._normalize_team(t) for t in teams]}
+
+    async def _sports_lookup_team(self, team_id: int) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/lookupteam.php", params={"id": team_id})
+        if not res.get("success"): return res
+        team = (res.get("data", {}).get("teams") or [None])[0]
+        return {"success": True, "team": self._normalize_team(team)} if team else {"success": False, "error": "Team not found"}
+
+    async def _sports_team_next_events(self, team_id: int, limit: int = 5) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/eventsnext.php", params={"id": team_id})
+        if not res.get("success"): return res
+        events = self._trim_list(res.get("data", {}).get("events"), limit)
+        return {"success": True, "count": len(events), "events": [self._normalize_event(e) for e in events]}
+
+    async def _sports_team_last_results(self, team_id: int, limit: int = 5) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/eventslast.php", params={"id": team_id})
+        if not res.get("success"): return res
+        results = self._trim_list(res.get("data", {}).get("results"), limit)
+        return {"success": True, "count": len(results), "events": [self._normalize_event(e) for e in results]}
+
+    async def _sports_search_players(self, player_name: str) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/searchplayers.php", params={"p": player_name})
+        if not res.get("success"): return res
+        players = res.get("data", {}).get("player") or []
+        return {"success": True, "count": len(players), "players": players}
+
+    async def _sports_lookup_event(self, event_id: int) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/lookupevent.php", params={"id": event_id})
+        if not res.get("success"): return res
+        event = (res.get("data", {}).get("events") or [None])[0]
+        return {"success": True, "event": self._normalize_event(event)} if event else {"success": False, "error": "Event not found"}
+
+    async def _sports_search_events(self, query: str, season: Optional[str] = None) -> Dict[str, Any]:
+        params = {"e": query}
+        if season: params["s"] = season
+        res = await self._http_get_json(f"{self._sports_api_base}/searchevents.php", params=params)
+        if not res.get("success"): return res
+        events = res.get("data", {}).get("event") or []
+        return {"success": True, "count": len(events), "events": [self._normalize_event(e) for e in events]}
+        
+    async def _sports_league_table(self, league_id: int, season: str) -> Dict[str, Any]:
+        res = await self._http_get_json(f"{self._sports_api_base}/lookuptable.php", params={"l": league_id, "s": season})
+        if not res.get("success"): return res
+        return {"success": True, "table": res.get("data", {}).get("table") or []}
+
+    async def _fetch_more_messages(self, channel_id: Optional[int] = None, limit: int = 10, before_message_id: int = None, _context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        try:
+            # auto-detection of channel from execution context if not provided
+            if channel_id is None and _context and isinstance(_context.get("channel_id"), int):
+                channel_id = _context.get("channel_id")
+
+            channel = self.bot.get_channel(channel_id) if channel_id is not None else None
+            if not channel: return {"success": False, "error": f"Channel {channel_id} not found"}
+            messages_data = []
             before_obj = discord.Object(id=before_message_id) if before_message_id else None
-            
             async for message in channel.history(limit=limit, before=before_obj):
-                messages.append({
-                    "id": message.id,
-                    "author": message.author.display_name,
-                    "username": message.author.name,
-                    "content": message.content,
-                    "timestamp": message.created_at.isoformat(),
-                    "is_bot": message.author.bot
-                })
-            
-            return {
-                "success": True,
-                "messages": list(reversed(messages)),  # Return in chronological order
-                "count": len(messages)
-            }
+                messages_data.append({"id": message.id, "author": message.author.display_name, "content": message.content})
+            return {"success": True, "messages": list(reversed(messages_data))}
         except Exception as e:
-            self.logger.error(f"Error fetching messages: {e}")
+            self.logger.error(f"Error fetching messages: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
     
-    async def _add_memory(self, memory_key: str, memory_content: str, memory_type: str = "general", created_by_discord_id: int = None) -> Dict[str, Any]:
-        """Add a new memory"""
-        try:
-            success = database.add_ai_memory(memory_key, memory_content, memory_type, created_by_discord_id)
-            if success:
-                return {"success": True, "message": f"Memory '{memory_key}' added successfully"}
-            else:
-                return {"success": False, "error": "Failed to add memory (key may already exist)"}
-        except Exception as e:
-            self.logger.error(f"Error adding memory: {e}")
-            return {"success": False, "error": str(e)}
+    async def _add_memory(self, memory_key: str, memory_content: str, memory_type: str = "general", created_by_discord_id: int = None):
+        return {"success": database.add_ai_memory(memory_key, memory_content, memory_type, created_by_discord_id)}
     
-    async def _update_memory(self, memory_key: str, memory_content: str, memory_type: str = None) -> Dict[str, Any]:
-        """Update an existing memory"""
-        try:
-            success = database.update_ai_memory(memory_key, memory_content, memory_type)
-            if success:
-                return {"success": True, "message": f"Memory '{memory_key}' updated successfully"}
-            else:
-                return {"success": False, "error": "Memory not found or update failed"}
-        except Exception as e:
-            self.logger.error(f"Error updating memory: {e}")
-            return {"success": False, "error": str(e)}
+    async def _update_memory(self, memory_key: str, memory_content: str, memory_type: str = None):
+        return {"success": database.update_ai_memory(memory_key, memory_content, memory_type)}
     
-    async def _remove_memory(self, memory_key: str) -> Dict[str, Any]:
-        """Remove a memory"""
-        try:
-            success = database.delete_ai_memory(memory_key)
-            if success:
-                return {"success": True, "message": f"Memory '{memory_key}' removed successfully"}
-            else:
-                return {"success": False, "error": "Memory not found"}
-        except Exception as e:
-            self.logger.error(f"Error removing memory: {e}")
-            return {"success": False, "error": str(e)}
+    async def _remove_memory(self, memory_key: str):
+        return {"success": database.delete_ai_memory(memory_key)}
     
-    async def _get_memory(self, memory_key: str) -> Dict[str, Any]:
-        """Get a specific memory"""
-        try:
-            memory = database.get_ai_memory(memory_key)
-            if memory:
-                return {"success": True, "memory": memory}
-            else:
-                return {"success": False, "error": "Memory not found"}
-        except Exception as e:
-            self.logger.error(f"Error getting memory: {e}")
-            return {"success": False, "error": str(e)}
+    async def _get_memory(self, memory_key: str):
+        return {"memory": database.get_ai_memory(memory_key)}
     
-    async def _search_memories(self, search_term: str) -> Dict[str, Any]:
-        """Search memories by content"""
-        try:
-            memories = database.search_ai_memories(search_term)
-            return {"success": True, "memories": memories, "count": len(memories)}
-        except Exception as e:
-            self.logger.error(f"Error searching memories: {e}")
-            return {"success": False, "error": str(e)}
+    async def _search_memories(self, search_term: str):
+        return {"memories": database.search_ai_memories(search_term)}
     
-    async def _list_memories(self, memory_type: str = None) -> Dict[str, Any]:
-        """List all memories, optionally filtered by type"""
-        try:
-            memories = database.get_all_ai_memories(memory_type)
-            return {"success": True, "memories": memories, "count": len(memories)}
-        except Exception as e:
-            self.logger.error(f"Error listing memories: {e}")
-            return {"success": False, "error": str(e)}
+    async def _list_memories(self, memory_type: str = None):
+        return {"memories": database.get_all_ai_memories(memory_type)}
     
     async def _think_harder(self, problem_description: str, context: str = None) -> Dict[str, Any]:
-        """Use the more powerful Gemini 2.5 Pro model for complex coding problems"""
-        try:
-            # This function will be handled specially in the AI mention cog
-            # It returns a signal that the AI should use the 2.5 Pro model
-            return {
-                "success": True, 
-                "message": "Switching to advanced reasoning mode",
-                "use_pro_model": True,
-                "problem": problem_description,
-                "context": context
-            }
-        except Exception as e:
-            self.logger.error(f"Error in think_harder: {e}")
-            return {"success": False, "error": str(e)}
+        return {"success": True, "message": "Switching to advanced reasoning mode.", "use_pro_model": True, "problem": problem_description, "context": context}
     
     async def _upload_code_file(self, filename: str, content: str, language: str = "java") -> Dict[str, Any]:
-        """Upload a code file to Discord"""
         try:
-            # This function will be handled specially in the AI mention cog
-            # It returns a signal that the AI wants to upload a file
             return {
-                "success": True,
-                "message": "File upload requested",
-                "upload_file": True,
+                "success": True, 
+                "message": f"Code file '{filename}' ready for upload",
                 "filename": filename,
                 "content": content,
-                "language": language
+                "language": language,
+                "upload_file": True
             }
         except Exception as e:
-            self.logger.error(f"Error in upload_code_file: {e}")
+            self.logger.error(f"Error preparing file upload: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def _read_attachment_file(self, message_id: int, channel_id: int, attachment_index: int = 0) -> Dict[str, Any]:
-        """Read a small text attachment (<=3KB) from a message and return its content."""
         try:
             channel = self.bot.get_channel(channel_id)
-            if not channel:
-                return {"success": False, "error": f"Channel {channel_id} not found"}
-            try:
-                msg = await channel.fetch_message(message_id)
-            except discord.NotFound:
-                return {"success": False, "error": f"Message {message_id} not found"}
-            except Exception as e:
-                return {"success": False, "error": f"Failed to fetch message: {e}"}
-
-            if not msg.attachments:
-                return {"success": False, "error": "No attachments on the referenced message"}
-            if attachment_index < 0 or attachment_index >= len(msg.attachments):
-                return {"success": False, "error": f"attachment_index {attachment_index} out of range"}
+            if not channel: return {"success": False, "error": f"Channel {channel_id} not found"}
+            msg = await channel.fetch_message(message_id)
+            if not msg.attachments or attachment_index >= len(msg.attachments):
+                return {"success": False, "error": "Attachment not found"}
             att = msg.attachments[attachment_index]
+            if att.size > 5000: return {"success": False, "error": "Attachment too large (must be <= 5KB)"}
+            
+            content = (await att.read()).decode('utf-8', errors='replace')
+            return {"success": True, "filename": att.filename, "content": content}
+        except Exception as e:
+            self.logger.error(f"Error reading attachment: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
-            # Validate size and type
-            if att.size is None or att.size > 3 * 1024:
-                return {"success": False, "error": "Attachment too large (must be <= 3KB)"}
-            content_type = getattr(att, 'content_type', None) or ''
-            filename = att.filename or "file.txt"
-            is_text = content_type.startswith('text/') or any(filename.endswith(ext) for ext in [
-                '.txt', '.md', '.csv', '.json', '.yaml', '.yml', '.py', '.java', '.cpp', '.h', '.hpp', '.js', '.ts', '.html', '.css'
-            ])
-            if not is_text:
-                return {"success": False, "error": f"Unsupported attachment type for inline read: {content_type or 'unknown'}"}
-
-            data = await att.read()
-            try:
-                text = data.decode('utf-8', errors='replace')
-            except Exception:
-                text = data.decode('latin-1', errors='replace')
+    async def _get_schedule_today(self) -> Dict[str, Any]:
+        """Get all schedule items for today"""
+        try:
+            today = datetime.now().date()
+            start_of_day = datetime.combine(today, datetime.min.time()).isoformat()
+            end_of_day = datetime.combine(today, datetime.max.time()).isoformat()
+            
+            schedules = database.get_schedules_by_date_range(start_of_day, end_of_day)
+            
             return {
                 "success": True,
-                "message": "Attachment read successfully",
-                "filename": filename,
-                "content_type": content_type,
-                "size": att.size,
-                "content": text
+                "date": today.isoformat(),
+                "count": len(schedules),
+                "schedules": schedules
             }
         except Exception as e:
-            self.logger.error(f"Error in read_attachment_file: {e}")
+            self.logger.error(f"Error getting today's schedule: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
-    
-    def get_function_schema(self) -> List[Dict[str, Any]]:
-        """Get the schema for all available functions"""
-        return [
-            {
-                "name": "fetch_more_messages",
-                "description": "Fetch more messages from a channel by scrolling up in the chat history",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "channel_id": {"type": "integer", "description": "The Discord channel ID to fetch messages from"},
-                        "limit": {"type": "integer", "description": "Number of messages to fetch (default: 10)", "default": 10},
-                        "before_message_id": {"type": "integer", "description": "Message ID to fetch messages before (optional)"}
-                    },
-                    "required": ["channel_id"]
+
+    async def _get_schedule_date(self, date: str) -> Dict[str, Any]:
+        """Get all schedule items for a specific date (YYYY-MM-DD format)"""
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start_of_day = datetime.combine(target_date, datetime.min.time()).isoformat()
+            end_of_day = datetime.combine(target_date, datetime.max.time()).isoformat()
+            
+            schedules = database.get_schedules_by_date_range(start_of_day, end_of_day)
+            
+            return {
+                "success": True,
+                "date": target_date.isoformat(),
+                "count": len(schedules),
+                "schedules": schedules
+            }
+        except ValueError:
+            return {"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}
+        except Exception as e:
+            self.logger.error(f"Error getting schedule for date {date}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def _get_next_meeting(self, sub_team: str = None) -> Dict[str, Any]:
+        """Get the next upcoming meeting, optionally filtered by subteam"""
+        try:
+            now = datetime.now().isoformat()
+            
+            if sub_team:
+                if not SubTeam.is_valid(sub_team):
+                    return {
+                        "success": False, 
+                        "error": f"Invalid subteam: {sub_team}. Valid options: {SubTeam.get_all_values()}"
+                    }
+                schedules = database.get_schedules_by_sub_team(sub_team)
+            else:
+                schedules = database.get_all_schedules()
+            
+            # filter for future meetings and sort by start time
+            upcoming = [s for s in schedules if s['starts_at'] > now]
+            upcoming.sort(key=lambda x: x['starts_at'])
+            
+            if upcoming:
+                return {
+                    "success": True,
+                    "next_meeting": upcoming[0],
+                    "sub_team_filter": sub_team
                 }
-            },
-            {
-                "name": "add_memory",
-                "description": "Add a new memory to the AI's knowledge base",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "memory_key": {"type": "string", "description": "Unique key for the memory"},
-                        "memory_content": {"type": "string", "description": "The content to store in the memory"},
-                        "memory_type": {"type": "string", "description": "Type/category of the memory (default: general)", "default": "general"},
-                        "created_by_discord_id": {"type": "integer", "description": "Discord ID of the user who created this memory (optional)"}
-                    },
-                    "required": ["memory_key", "memory_content"]
+            else:
+                return {
+                    "success": True,
+                    "next_meeting": None,
+                    "message": f"No upcoming meetings found{' for ' + sub_team if sub_team else ''}"
                 }
-            },
-            {
-                "name": "update_memory",
-                "description": "Update an existing memory in the AI's knowledge base",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "memory_key": {"type": "string", "description": "Key of the memory to update"},
-                        "memory_content": {"type": "string", "description": "New content for the memory"},
-                        "memory_type": {"type": "string", "description": "New type/category for the memory (optional)"}
-                    },
-                    "required": ["memory_key", "memory_content"]
+        except Exception as e:
+            self.logger.error(f"Error getting next meeting: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def _find_meeting(self, search_term: str) -> Dict[str, Any]:
+        """Find meetings by searching title, description, or subteam"""
+        try:
+            schedules = database.search_schedules(search_term)
+            
+            return {
+                "success": True,
+                "search_term": search_term,
+                "count": len(schedules),
+                "meetings": schedules
+            }
+        except Exception as e:
+            self.logger.error(f"Error finding meeting: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def _get_meeting_notes(self, meeting_id: int) -> Dict[str, Any]:
+        """Get notes for a specific meeting by ID (for 'what did I miss' questions)"""
+        try:
+            schedule = database.get_schedule_by_id(meeting_id, include_notes=True)
+            
+            if not schedule:
+                return {
+                    "success": False,
+                    "error": f"Meeting with ID {meeting_id} not found"
                 }
-            },
-            {
-                "name": "remove_memory",
-                "description": "Remove a memory from the AI's knowledge base",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "memory_key": {"type": "string", "description": "Key of the memory to remove"}
-                    },
-                    "required": ["memory_key"]
-                }
-            },
-            {
-                "name": "get_memory",
-                "description": "Get a specific memory by its key",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "memory_key": {"type": "string", "description": "Key of the memory to retrieve"}
-                    },
-                    "required": ["memory_key"]
-                }
-            },
-            {
-                "name": "search_memories",
-                "description": "Search memories by content or key",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "search_term": {"type": "string", "description": "Term to search for in memory content or keys"}
-                    },
-                    "required": ["search_term"]
-                }
-            },
-            {
-                "name": "list_memories",
-                "description": "List all memories, optionally filtered by type",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "memory_type": {"type": "string", "description": "Type of memories to list (optional)"}
-                    },
-                    "required": []
-                }
-            },
-            {
-                "name": "think_harder",
-                "description": "Use advanced reasoning mode with Gemini 2.5 Pro for complex coding problems, APIs, or difficult technical questions",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "problem_description": {"type": "string", "description": "Description of the complex problem or coding challenge"},
-                        "context": {"type": "string", "description": "Additional context about the problem (optional)"}
-                    },
-                    "required": ["problem_description"]
-                }
-            },
-            {
-                "name": "upload_code_file",
-                "description": "Upload a code file to Discord when the code is too long for a message (over 5 lines)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {"type": "string", "description": "Name of the file with proper extension (e.g., 'KrakenSubsystem.java', 'Robot.java')"},
-                        "content": {"type": "string", "description": "The code content to upload"},
-                        "language": {"type": "string", "description": "Programming language for syntax highlighting (e.g., 'java', 'cpp', 'python')", "default": "java"}
-                    },
-                    "required": ["filename", "content"]
-                }
-            },
-            {
-                "name": "read_attachment_file",
-                "description": "Read a small text attachment (<=3KB) from a specific message",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "message_id": {"type": "integer", "description": "The Discord message ID that has the attachment"},
-                        "channel_id": {"type": "integer", "description": "The Discord channel ID of the message"},
-                        "attachment_index": {"type": "integer", "description": "Index of the attachment on that message (default 0)", "default": 0}
-                    },
-                    "required": ["message_id", "channel_id"]
+            
+
+            return {
+                "success": True,
+                "meeting": {
+                    "id": schedule['id'],
+                    "title": schedule['title'],
+                    "sub_team": schedule['sub_team'],
+                    "room": schedule['room'],
+                    "starts_at": schedule['starts_at'],
+                    "ends_at": schedule['ends_at'],
+                    "teachers": schedule['teachers'],
+                    "notes": schedule['notes'],
+                    "slides_url": schedule['slides_url']
                 }
             }
+        except Exception as e:
+            self.logger.error(f"Error getting meeting notes: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def get_tool_config(self, include: Optional[Set[str]] = None, exclude: Optional[Set[str]] = None) -> List[types.Tool]:
+        """Get the tool configuration. Optionally filter by include/exclude sets of function names."""
+        declarations = [
+            types.FunctionDeclaration(
+                name="fetch_more_messages",
+                description=(
+                    "Fetch additional recent messages from this channel ONLY when the user explicitly asks to see more/earlier messages "
+                    "(e.g., 'scroll up', 'show previous messages', 'what did I miss above'). "
+                    "Do not call based on your own initiative. channel_id is inferred; no need to pass it."
+                ),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        'limit': types.Schema(type=types.Type.INTEGER, description="How many messages to fetch (<= 25)"),
+                        'before_message_id': types.Schema(type=types.Type.INTEGER, description="Fetch messages before this ID")
+                    }
+                )
+            ),
+            types.FunctionDeclaration(
+                name="think_harder",
+                description=(
+                    "Runs advanced calculations for complex FRC engineering problems. "
+                    "Only the lite model may request this function (for escalation). The pro model must NOT call it. "
+                    "Call at most once per user interaction."
+                ),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        'problem_description': types.Schema(type=types.Type.STRING, description="Why escalation is needed"),
+                        'context': types.Schema(type=types.Type.STRING, description="Optional minimal context to carry forward")
+                    },
+                    required=['problem_description']
+                )
+            ),
+            types.FunctionDeclaration(
+                name="upload_code_file",
+                description=(
+                    "Upload a single complete SOURCE CODE file only when the generated code exceeds chat limits "
+                    "(~>100 lines or >2000 chars). Never upload markdown/prose, instructions, or checklists. "
+                    "Limit one upload per interaction. Prefer inline answers when possible."
+                ),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        'filename': types.Schema(type=types.Type.STRING),
+                        'content': types.Schema(type=types.Type.STRING),
+                        'language': types.Schema(type=types.Type.STRING)
+                    },
+                    required=['filename', 'content']
+                )
+            ),
+            types.FunctionDeclaration(name="read_attachment_file", description="Read a text attachment from a message.", parameters=types.Schema(type=types.Type.OBJECT, properties={'message_id': types.Schema(type=types.Type.INTEGER), 'channel_id': types.Schema(type=types.Type.INTEGER), 'attachment_index': types.Schema(type=types.Type.INTEGER)}, required=['message_id', 'channel_id'])),
+            # types.FunctionDeclaration(name="sports_search_teams", description="Search for a sports team by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'query': types.Schema(type=types.Type.STRING)}, required=['query'])),
+            # types.FunctionDeclaration(name="sports_lookup_team", description="Look up a team by its ID.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
+            # types.FunctionDeclaration(name="sports_team_next_events", description="Get a team's upcoming games.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER), 'limit': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
+            # types.FunctionDeclaration(name="sports_team_last_results", description="Get a team's recent results.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER), 'limit': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
+            # types.FunctionDeclaration(name="sports_search_players", description="Search for a player by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'player_name': types.Schema(type=types.Type.STRING)}, required=['player_name'])),
+            # types.FunctionDeclaration(name="sports_lookup_event", description="Look up a game by its ID.", parameters=types.Schema(type=types.Type.OBJECT, properties={'event_id': types.Schema(type=types.Type.INTEGER)}, required=['event_id'])),
+            # types.FunctionDeclaration(name="sports_search_events", description="Search for games by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'query': types.Schema(type=types.Type.STRING), 'season': types.Schema(type=types.Type.STRING)}, required=['query'])),
+            # types.FunctionDeclaration(name="sports_league_table", description="Get league standings.", parameters=types.Schema(type=types.Type.OBJECT, properties={'league_id': types.Schema(type=types.Type.INTEGER), 'season': types.Schema(type=types.Type.STRING)}, required=['league_id', 'season'])),
+            types.FunctionDeclaration(name="get_schedule_today", description="Get all schedule items for today.", parameters=types.Schema(type=types.Type.OBJECT, properties={})),
+            types.FunctionDeclaration(name="get_schedule_date", description="Get all schedule items for a specific date.", parameters=types.Schema(type=types.Type.OBJECT, properties={'date': types.Schema(type=types.Type.STRING)}, required=['date'])),
+            types.FunctionDeclaration(
+                name="get_next_meeting",
+                description=(
+                    "Get the next upcoming meeting. If 'sub_team' is provided, filter by that subteam. "
+                    "Use this to answer questions like 'when is the next meeting' or 'what's the next Software & Electronics meeting'. "
+                    "Returned object fields: id, title, sub_team, room, starts_at, ends_at, teachers (list of {full_name, email, discord_id}), notes, slides_url."
+                ),
+                parameters=types.Schema(type=types.Type.OBJECT, properties={'sub_team': types.Schema(type=types.Type.STRING)})
+            ),
+            types.FunctionDeclaration(
+                name="find_meeting",
+                description=(
+                    "Search meetings by title, description, or subteam. Use when the user references a meeting loosely (e.g., 'intro for new members'). "
+                    "Returned list items include: id, title, sub_team, room, starts_at, ends_at, teachers, notes, slides_url."
+                ),
+                parameters=types.Schema(type=types.Type.OBJECT, properties={'search_term': types.Schema(type=types.Type.STRING)}, required=['search_term'])
+            ),
+            types.FunctionDeclaration(
+                name="get_meeting_notes",
+                description=(
+                    "Get meeting notes by ID. Use when answering 'what did I miss' or specific follow-ups about content."
+                ),
+                parameters=types.Schema(type=types.Type.OBJECT, properties={'meeting_id': types.Schema(type=types.Type.INTEGER)}, required=['meeting_id'])
+            ),
         ]
+
+        if include:
+            declarations = [d for d in declarations if d.name in include]
+        if exclude:
+            declarations = [d for d in declarations if d.name not in exclude]
+
+        return [types.Tool(function_declarations=declarations)]
     
-    async def execute_function(self, function_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_function(self, function_name: str, parameters: Dict[str, Any], *, _context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute a function by name with given parameters"""
         if function_name not in self.functions:
             return {"success": False, "error": f"Function '{function_name}' not found"}
         
         try:
-            param_keys = list(parameters.keys())
-            # Avoid logging huge payloads; just log keys and a short preview
-            preview = repr(parameters)
-            if len(preview) > 300:
-                preview = preview[:300] + '...'
-            self.logger.debug(f"Executing function '{function_name}' with params keys: {param_keys} preview: {preview}")
-            start_time = time.time()
-            result = await self.functions[function_name](**parameters)
-            elapsed_ms = (time.time() - start_time) * 1000.0
-            # Summarize result for logs
-            result_keys = list(result.keys()) if isinstance(result, dict) else []
-            result_preview = repr(result)
-            if len(result_preview) > 300:
-                result_preview = result_preview[:300] + '...'
-            self.logger.debug(
-                f"Function '{function_name}' completed in {elapsed_ms:.1f}ms; result keys: {result_keys}; preview: {result_preview}"
+            self.logger.info(
+                f"[FunctionCall] name={function_name} args={self._stringify_for_log(parameters)}"
+            )
+
+            fn = self.functions[function_name]
+            if _context is not None:
+                try:
+                    result = await fn(**parameters, _context=_context)
+                except TypeError:
+                    result = await fn(**parameters)
+            else:
+                result = await fn(**parameters)
+
+            self.logger.info(
+                f"[FunctionResult] name={function_name} response={self._stringify_for_log(result)}"
             )
             return result
         except Exception as e:
-            self.logger.error(f"Error executing function {function_name}: {e}")
-            return {"success": False, "error": str(e)}
-    
-    def _extract_balanced_json(self, text: str, start_index: int) -> Optional[Dict[str, Any]]:
-        """Extract a balanced JSON object starting at start_index (which should point to '{').
-
-        Returns a dict with keys: json_str (the substring), end_index (index after the JSON), or None if failed.
-        """
-        if start_index >= len(text) or text[start_index] != '{':
-            return None
-        i = start_index
-        brace_depth = 0
-        in_string = False
-        escape_next = False
-        while i < len(text):
-            ch = text[i]
-            if in_string:
-                if escape_next:
-                    escape_next = False
-                elif ch == '\\':
-                    escape_next = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == '{':
-                    brace_depth += 1
-                elif ch == '}':
-                    brace_depth -= 1
-                    if brace_depth == 0:
-                        # include this closing brace
-                        json_str = text[start_index:i+1]
-                        return {"json_str": json_str, "end_index": i + 1}
-            i += 1
-        return None
-
-    def parse_function_calls(self, text: str) -> List[Dict[str, Any]]:
-        """Parse function calls from AI response text using balanced-brace JSON extraction."""
-        function_calls: List[Dict[str, Any]] = []
-        # Debug logging (truncate to reduce noise)
-        self.logger.debug("Function call parsing - Text (truncated): %s", repr(text)[:600])
-
-        idx = 0
-        while idx < len(text):
-            # Find the next tag like <functionName> or </functionName>
-            tag_match = re.search(r'<\/?(\w+)\s*>', text[idx:])
-            if not tag_match:
-                break
-            fn_name = tag_match.group(1)
-            tag_start = idx + tag_match.start()
-            tag_end = idx + tag_match.end()
-            # After the tag, skip whitespace to the JSON object
-            j = tag_end
-            while j < len(text) and text[j].isspace():
-                j += 1
-            if j >= len(text) or text[j] != '{':
-                idx = tag_end
-                continue
-            extracted = self._extract_balanced_json(text, j)
-            if not extracted:
-                idx = tag_end
-                continue
-            params_json = extracted["json_str"]
-            idx = extracted["end_index"]
-            # Optionally skip a closing tag like </functionName>
-            closing_match = re.match(r'\s*</%s\s*>' % re.escape(fn_name), text[idx:])
-            if closing_match:
-                idx += closing_match.end()
-            # Try strict parse first
-            try:
-                parameters = json.loads(params_json)
-            except json.JSONDecodeError as e:
-                # Attempt to sanitize: escape literal newlines/tabs/returns inside string literals
-                self.logger.warning(f"Strict JSON parse failed for {fn_name}: {e}. Attempting sanitization.")
-                sanitized = self._escape_control_chars_inside_strings(params_json)
-                try:
-                    parameters = json.loads(sanitized)
-                except json.JSONDecodeError as e2:
-                    self.logger.warning(f"Sanitized JSON parse failed for {fn_name}: {e2}")
-                    self.logger.warning(f"Raw params string (truncated): {repr(params_json[:200])}...")
-                    continue
-            function_calls.append({"name": fn_name, "parameters": parameters})
-            params_preview = params_json if len(params_json) <= 400 else params_json[:400] + '...'
-            self.logger.debug(f"Successfully parsed function call: {fn_name}; params length: {len(params_json)}; preview: {params_preview}")
-        self.logger.debug(f"Function call parsing - Matches found: {[c['name'] for c in function_calls]}")
-        return function_calls
-    
-    def remove_function_calls_from_text(self, text: str) -> str:
-        """Remove function call segments like <fn>{...} from text using balanced JSON parsing."""
-        result_parts: List[str] = []
-        idx = 0
-        while idx < len(text):
-            tag_match = re.search(r'<\/?(\w+)\s*>', text[idx:])
-            if not tag_match:
-                result_parts.append(text[idx:])
-                break
-            tag_start = idx + tag_match.start()
-            tag_end = idx + tag_match.end()
-            # append text before the tag
-            result_parts.append(text[idx:tag_start])
-            # move to after tag
-            j = tag_end
-            while j < len(text) and text[j].isspace():
-                j += 1
-            if j < len(text) and text[j] == '{':
-                extracted = self._extract_balanced_json(text, j)
-                if extracted:
-                    # skip over the JSON object
-                    idx = extracted["end_index"]
-                    # Optionally skip a closing tag if present
-                    closing_name = tag_match.group(1)
-                    closing_match = re.match(r'\s*</%s\s*>' % re.escape(closing_name), text[idx:])
-                    if closing_match:
-                        idx += closing_match.end()
-                    continue
-            # if no JSON after tag, just skip the tag and continue
-            idx = tag_end
-        cleaned_text = ''.join(result_parts)
-        # Normalize whitespace a bit
-        cleaned_text = re.sub(r'\n\s*\n', '\n\n', cleaned_text)
-        cleaned_text = cleaned_text.strip()
-        return cleaned_text
-
-    def _escape_control_chars_inside_strings(self, json_text: str) -> str:
-        """Escape literal control characters (\n, \r, \t) that appear inside JSON string literals.
-
-        This keeps content identical while producing JSON that json.loads can parse.
-        """
-        result_chars: List[str] = []
-        in_string = False
-        escape_next = False
-        for ch in json_text:
-            if in_string:
-                if escape_next:
-                    result_chars.append(ch)
-                    escape_next = False
-                    continue
-                if ch == '\\':
-                    result_chars.append(ch)
-                    escape_next = True
-                    continue
-                if ch == '"':
-                    result_chars.append(ch)
-                    in_string = False
-                    continue
-                if ch == '\n':
-                    result_chars.append('\\n')
-                    continue
-                if ch == '\r':
-                    result_chars.append('\\r')
-                    continue
-                if ch == '\t':
-                    result_chars.append('\\t')
-                    continue
-                # default inside string
-                result_chars.append(ch)
-            else:
-                if ch == '"':
-                    result_chars.append(ch)
-                    in_string = True
-                else:
-                    result_chars.append(ch)
-        return ''.join(result_chars)
+            self.logger.error(f"Error executing function {function_name}: {e}", exc_info=True)
+            error_result = {"success": False, "error": str(e)}
+            # still emit a result log so every call has a response line
+            self.logger.info(
+                f"[FunctionResult] name={function_name} response={self._stringify_for_log(error_result)}"
+            )
+            return error_result
+            

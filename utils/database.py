@@ -1,9 +1,11 @@
 import sqlite3
 import os
 import logging
+import json
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+from .enums import SubTeam
 
 DB_FILE = "verified_users.db"
 logger = logging.getLogger(__name__)
@@ -65,6 +67,23 @@ def setup_database():
                     updated_at TEXT NOT NULL,
                     created_by_discord_id INTEGER,
                     is_active BOOLEAN NOT NULL DEFAULT 1
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    starts_at TEXT NOT NULL,
+                    ends_at TEXT NOT NULL,
+                    sub_team TEXT NOT NULL,
+                    room TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    teachers_json TEXT NOT NULL,
+                    slides_url TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
             """)
             
@@ -164,6 +183,45 @@ def get_all_verified_users() -> List[dict]:
     except sqlite3.Error as e:
         logger.error(f"Error getting all verified users: {e}")
         return []
+
+
+# role sync bookkeeping
+def update_verified_user_roles(discord_id: int, stored_role_ids: List[int], *, checked_only: bool = False) -> bool:
+    """Update verified user's stored roles and timestamps.
+
+    When checked_only is True, only updates roles_last_checked_at and stored_roles.
+    When False, updates both roles_last_checked_at and roles_last_updated_at in addition to stored_roles.
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            roles_str = ",".join(map(str, stored_role_ids))
+
+            if checked_only:
+                cursor.execute(
+                    """
+                        UPDATE verified_users
+                        SET roles_last_checked_at = ?, stored_roles = ?
+                        WHERE discord_id = ?
+                    """,
+                    (now_iso, roles_str, discord_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                        UPDATE verified_users
+                        SET roles_last_checked_at = ?, roles_last_updated_at = ?, stored_roles = ?
+                        WHERE discord_id = ?
+                    """,
+                    (now_iso, now_iso, roles_str, discord_id),
+                )
+
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error(f"Error updating verified user roles: {e}")
+        return False
 
 # student management functions
 def add_or_update_student(email: str, first_name: str, last_name: str, teams: List[str] = None):
@@ -409,3 +467,252 @@ def search_ai_memories(search_term: str) -> List[dict]:
     except sqlite3.Error as e:
         logger.error(f"Error searching AI memories: {e}")
         return []
+
+# schedule management functions
+def add_schedule(starts_at: str, ends_at: str, sub_team: str, room: str, title: str, 
+                teachers: List[Dict[str, Any]], description: str = None, 
+                slides_url: str = None, notes: str = None) -> bool:
+    """Add a new schedule item"""
+    try:
+        # validate subteam
+        if not SubTeam.is_valid(sub_team):
+            logger.error(f"Invalid subteam: {sub_team}. Valid options: {SubTeam.get_all_values()}")
+            return False
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            
+            # convert teachers list to JSON string
+            teachers_json = json.dumps(teachers)
+            
+            cursor.execute("""
+                INSERT INTO schedules (
+                    starts_at, ends_at, sub_team, room, title, description, 
+                    teachers_json, slides_url, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (starts_at, ends_at, sub_team, room, title, description, 
+                  teachers_json, slides_url, notes, now_iso, now_iso))
+            
+            conn.commit()
+            logger.info(f"Added schedule item: {title} at {starts_at}")
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"Error adding schedule item: {e}")
+        return False
+
+def get_schedule_by_id(schedule_id: int, include_notes: bool = False) -> Optional[dict]:
+    """Get a schedule item by ID"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
+            result = cursor.fetchone()
+            if result:
+                schedule = dict(result)
+                # parse teachers JSON back to list
+                schedule['teachers'] = json.loads(schedule['teachers_json'])
+                del schedule['teachers_json']  # Remove the JSON field
+                
+                # gate notes unless specifically requested
+                if not include_notes:
+                    schedule['notes'] = None
+                    schedule['slides_url'] = None
+                
+                return schedule
+            return None
+    except sqlite3.Error as e:
+        logger.error(f"Error getting schedule by ID: {e}")
+        return None
+
+def get_all_schedules() -> List[dict]:
+    """Get all schedule items"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM schedules ORDER BY starts_at ASC")
+            results = cursor.fetchall()
+            schedules = []
+            for row in results:
+                schedule = dict(row)
+                # parse teachers JSON back to list
+                schedule['teachers'] = json.loads(schedule['teachers_json'])
+                del schedule['teachers_json']
+                
+                # gate notes and slides_url to save context
+                schedule['notes'] = None
+                schedule['slides_url'] = None
+                
+                schedules.append(schedule)
+            return schedules
+    except sqlite3.Error as e:
+        logger.error(f"Error getting all schedules: {e}")
+        return []
+
+def get_schedules_by_date_range(start_date: str, end_date: str) -> List[dict]:
+    """Get schedules within a date range"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM schedules 
+                WHERE starts_at >= ? AND starts_at <= ? 
+                ORDER BY starts_at ASC
+            """, (start_date, end_date))
+            results = cursor.fetchall()
+            schedules = []
+            for row in results:
+                schedule = dict(row)
+                # parse teachers JSON back to list
+                schedule['teachers'] = json.loads(schedule['teachers_json'])
+                del schedule['teachers_json']
+                
+                # gate notes and slides_url to save context
+                schedule['notes'] = None
+                schedule['slides_url'] = None
+                
+                schedules.append(schedule)
+            return schedules
+    except sqlite3.Error as e:
+        logger.error(f"Error getting schedules by date range: {e}")
+        return []
+
+def get_schedules_by_sub_team(sub_team: str) -> List[dict]:
+    """Get schedules for a specific sub team"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM schedules 
+                WHERE sub_team = ? 
+                ORDER BY starts_at ASC
+            """, (sub_team,))
+            results = cursor.fetchall()
+            schedules = []
+            for row in results:
+                schedule = dict(row)
+                # parse teachers JSON back to list
+                schedule['teachers'] = json.loads(schedule['teachers_json'])
+                del schedule['teachers_json']
+                
+                # gate notes and slides_url to save context
+                schedule['notes'] = None
+                schedule['slides_url'] = None
+                
+                schedules.append(schedule)
+            return schedules
+    except sqlite3.Error as e:
+        logger.error(f"Error getting schedules by sub team: {e}")
+        return []
+
+def update_schedule(schedule_id: int, starts_at: str = None, ends_at: str = None, 
+                   sub_team: str = None, room: str = None, title: str = None, 
+                   description: str = None, teachers: List[Dict[str, Any]] = None, 
+                   slides_url: str = None, notes: str = None) -> bool:
+    """Update an existing schedule item"""
+    try:
+        # validate subteam if provided
+        if sub_team is not None and not SubTeam.is_valid(sub_team):
+            logger.error(f"Invalid subteam: {sub_team}. Valid options: {SubTeam.get_all_values()}")
+            return False
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now_iso = datetime.utcnow().isoformat()
+            
+            update_fields = []
+            update_values = []
+            
+            if starts_at is not None:
+                update_fields.append("starts_at = ?")
+                update_values.append(starts_at)
+            if ends_at is not None:
+                update_fields.append("ends_at = ?")
+                update_values.append(ends_at)
+            if sub_team is not None:
+                update_fields.append("sub_team = ?")
+                update_values.append(sub_team)
+            if room is not None:
+                update_fields.append("room = ?")
+                update_values.append(room)
+            if title is not None:
+                update_fields.append("title = ?")
+                update_values.append(title)
+            if description is not None:
+                update_fields.append("description = ?")
+                update_values.append(description)
+            if teachers is not None:
+                update_fields.append("teachers_json = ?")
+                update_values.append(json.dumps(teachers))
+            if slides_url is not None:
+                update_fields.append("slides_url = ?")
+                update_values.append(slides_url)
+            if notes is not None:
+                update_fields.append("notes = ?")
+                update_values.append(notes)
+            
+            if not update_fields:
+                return False  # No fields to update
+            
+            update_fields.append("updated_at = ?")
+            update_values.append(now_iso)
+            update_values.append(schedule_id)
+            
+            query = f"UPDATE schedules SET {', '.join(update_fields)} WHERE id = ?"
+            cursor.execute(query, update_values)
+            
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Updated schedule item ID: {schedule_id}")
+                return True
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Error updating schedule: {e}")
+        return False
+
+def delete_schedule(schedule_id: int) -> bool:
+    """Delete a schedule item by ID"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Deleted schedule item ID: {schedule_id}")
+                return True
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting schedule: {e}")
+        return False
+
+def search_schedules(search_term: str) -> List[dict]:
+    """Search schedules by title, description, or sub team"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM schedules 
+                WHERE (title LIKE ? OR description LIKE ? OR sub_team LIKE ? OR room LIKE ?) 
+                ORDER BY starts_at ASC
+            """, (f"%{search_term}%", f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"))
+            results = cursor.fetchall()
+            schedules = []
+            for row in results:
+                schedule = dict(row)
+                # parse teachers JSON back to list
+                schedule['teachers'] = json.loads(schedule['teachers_json'])
+                del schedule['teachers_json']
+                
+                # gate notes and slides_url to save context
+                schedule['notes'] = None
+                schedule['slides_url'] = None
+                
+                schedules.append(schedule)
+            return schedules
+    except sqlite3.Error as e:
+        logger.error(f"Error searching schedules: {e}")
+        return []
+
+def get_valid_subteams() -> List[str]:
+    """Get all valid subteam values"""
+    return SubTeam.get_all_values()
