@@ -80,7 +80,7 @@ AI_TOP_P = float(get_optional_env("AI_TOP_P", "0.9"))
 AI_TOP_P_PRO = float(get_optional_env("AI_TOP_P_PRO", "0.8"))  # Slightly lower for more focused responses
 AI_REPETITION_PENALTY = float(get_optional_env("AI_REPETITION_PENALTY", "1.1"))
 AI_INCLUDE_EXPERIENCE = get_bool_env("AI_INCLUDE_EXPERIENCE", True)
-AI_INCLUDE_FOOTER = get_bool_env("AI_INCLUDE_FOOTER", False)  # Whether to append timing/token footer to replies
+AI_INCLUDE_FOOTER = get_bool_env("AI_INCLUDE_FOOTER",  )  # Whether to append timing/token footer to replies
 
 # Logging configuration
 LOG_LEVEL = get_optional_env("LOG_LEVEL", "INFO")
