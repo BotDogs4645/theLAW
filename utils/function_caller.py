@@ -1,6 +1,6 @@
 """
 Function calling framework for AI to execute functions.
-This file is written for the modern 'google-genai' SDK.
+OpenAI-only implementation.
 """
 import asyncio
 import time
@@ -13,8 +13,6 @@ import logging
 from utils.enums import SubTeam
 import discord
 import aiohttp
-
-from google.genai import types
 
 class FunctionCaller:
     """Handles function calling for AI responses"""
@@ -355,101 +353,159 @@ class FunctionCaller:
             self.logger.error(f"Error getting meeting notes: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    def get_tool_config(self, include: Optional[Set[str]] = None, exclude: Optional[Set[str]] = None) -> List[types.Tool]:
-        """Get the tool configuration. Optionally filter by include/exclude sets of function names."""
-        declarations = [
-            types.FunctionDeclaration(
-                name="fetch_more_messages",
-                description=(
-                    "Fetch additional recent messages from this channel ONLY when the user explicitly asks to see more/earlier messages "
-                    "(e.g., 'scroll up', 'show previous messages', 'what did I miss above'). "
-                    "Do not call based on your own initiative. channel_id is inferred; no need to pass it."
-                ),
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        'limit': types.Schema(type=types.Type.INTEGER, description="How many messages to fetch (<= 25)"),
-                        'before_message_id': types.Schema(type=types.Type.INTEGER, description="Fetch messages before this ID")
+    def get_openai_tools(self, include: Optional[Set[str]] = None, exclude: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+        """Get OpenAI-formatted tool definitions. Optionally filter by include/exclude sets of function names."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "fetch_more_messages",
+                    "description": (
+                        "Fetch additional recent messages from this channel ONLY when the user explicitly asks to see more/earlier messages "
+                        "(e.g., 'scroll up', 'show previous messages', 'what did I miss above'). "
+                        "Do not call based on your own initiative. channel_id is inferred; no need to pass it."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "description": "How many messages to fetch (<= 25)"},
+                            "before_message_id": {"type": "integer", "description": "Fetch messages before this ID"}
+                        }
                     }
-                )
-            ),
-            types.FunctionDeclaration(
-                name="think_harder",
-                description=(
-                    "Runs advanced calculations for complex FRC engineering problems. "
-                    "Only the lite model may request this function (for escalation). The pro model must NOT call it. "
-                    "Call at most once per user interaction."
-                ),
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        'problem_description': types.Schema(type=types.Type.STRING, description="Why escalation is needed"),
-                        'context': types.Schema(type=types.Type.STRING, description="Optional minimal context to carry forward")
-                    },
-                    required=['problem_description']
-                )
-            ),
-            types.FunctionDeclaration(
-                name="upload_code_file",
-                description=(
-                    "Upload a single complete SOURCE CODE file only when the generated code exceeds chat limits "
-                    "(~>100 lines or >2000 chars). Never upload markdown/prose, instructions, or checklists. "
-                    "Limit one upload per interaction. Prefer inline answers when possible."
-                ),
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        'filename': types.Schema(type=types.Type.STRING),
-                        'content': types.Schema(type=types.Type.STRING),
-                        'language': types.Schema(type=types.Type.STRING)
-                    },
-                    required=['filename', 'content']
-                )
-            ),
-            types.FunctionDeclaration(name="read_attachment_file", description="Read a text attachment from a message.", parameters=types.Schema(type=types.Type.OBJECT, properties={'message_id': types.Schema(type=types.Type.INTEGER), 'channel_id': types.Schema(type=types.Type.INTEGER), 'attachment_index': types.Schema(type=types.Type.INTEGER)}, required=['message_id', 'channel_id'])),
-            # types.FunctionDeclaration(name="sports_search_teams", description="Search for a sports team by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'query': types.Schema(type=types.Type.STRING)}, required=['query'])),
-            # types.FunctionDeclaration(name="sports_lookup_team", description="Look up a team by its ID.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
-            # types.FunctionDeclaration(name="sports_team_next_events", description="Get a team's upcoming games.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER), 'limit': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
-            # types.FunctionDeclaration(name="sports_team_last_results", description="Get a team's recent results.", parameters=types.Schema(type=types.Type.OBJECT, properties={'team_id': types.Schema(type=types.Type.INTEGER), 'limit': types.Schema(type=types.Type.INTEGER)}, required=['team_id'])),
-            # types.FunctionDeclaration(name="sports_search_players", description="Search for a player by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'player_name': types.Schema(type=types.Type.STRING)}, required=['player_name'])),
-            # types.FunctionDeclaration(name="sports_lookup_event", description="Look up a game by its ID.", parameters=types.Schema(type=types.Type.OBJECT, properties={'event_id': types.Schema(type=types.Type.INTEGER)}, required=['event_id'])),
-            # types.FunctionDeclaration(name="sports_search_events", description="Search for games by name.", parameters=types.Schema(type=types.Type.OBJECT, properties={'query': types.Schema(type=types.Type.STRING), 'season': types.Schema(type=types.Type.STRING)}, required=['query'])),
-            # types.FunctionDeclaration(name="sports_league_table", description="Get league standings.", parameters=types.Schema(type=types.Type.OBJECT, properties={'league_id': types.Schema(type=types.Type.INTEGER), 'season': types.Schema(type=types.Type.STRING)}, required=['league_id', 'season'])),
-            types.FunctionDeclaration(name="get_schedule_today", description="Get all schedule items for today.", parameters=types.Schema(type=types.Type.OBJECT, properties={})),
-            types.FunctionDeclaration(name="get_schedule_date", description="Get all schedule items for a specific date.", parameters=types.Schema(type=types.Type.OBJECT, properties={'date': types.Schema(type=types.Type.STRING)}, required=['date'])),
-            types.FunctionDeclaration(
-                name="get_next_meeting",
-                description=(
-                    "Get the next upcoming meeting. If 'sub_team' is provided, filter by that subteam. "
-                    "Use this to answer questions like 'when is the next meeting' or 'what's the next Software & Electronics meeting'. "
-                    "Returned object fields: id, title, sub_team, room, starts_at, ends_at, teachers (list of {full_name, email, discord_id}), notes, slides_url."
-                ),
-                parameters=types.Schema(type=types.Type.OBJECT, properties={'sub_team': types.Schema(type=types.Type.STRING)})
-            ),
-            types.FunctionDeclaration(
-                name="find_meeting",
-                description=(
-                    "Search meetings by title, description, or subteam. Use when the user references a meeting loosely (e.g., 'intro for new members'). "
-                    "Returned list items include: id, title, sub_team, room, starts_at, ends_at, teachers, notes, slides_url."
-                ),
-                parameters=types.Schema(type=types.Type.OBJECT, properties={'search_term': types.Schema(type=types.Type.STRING)}, required=['search_term'])
-            ),
-            types.FunctionDeclaration(
-                name="get_meeting_notes",
-                description=(
-                    "Get meeting notes by ID. Use when answering 'what did I miss' or specific follow-ups about content."
-                ),
-                parameters=types.Schema(type=types.Type.OBJECT, properties={'meeting_id': types.Schema(type=types.Type.INTEGER)}, required=['meeting_id'])
-            ),
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "think_harder",
+                    "description": (
+                        "Escalate to advanced reasoning model for complex FRC engineering problems requiring implementation, "
+                        "debugging, or detailed calculations. Only call this from the lite model. Do not call from pro model. "
+                        "Call at most once per user interaction."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "problem_description": {"type": "string", "description": "Brief description of why escalation is needed"},
+                            "context": {"type": "string", "description": "Optional minimal context to carry forward"}
+                        },
+                        "required": ["problem_description"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "upload_code_file",
+                    "description": (
+                        "Upload a single complete SOURCE CODE file only when the generated code exceeds chat limits "
+                        "(~>100 lines or >2000 chars). Never upload markdown/prose, instructions, or checklists. "
+                        "Limit one upload per interaction. Prefer inline answers when possible."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "Name of the file to upload"},
+                            "content": {"type": "string", "description": "Full source code content"},
+                            "language": {"type": "string", "description": "Programming language (e.g., 'java', 'python')"}
+                        },
+                        "required": ["filename", "content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_attachment_file",
+                    "description": "Read a text attachment from a message in this channel.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message_id": {"type": "integer", "description": "Discord message ID"},
+                            "channel_id": {"type": "integer", "description": "Discord channel ID"},
+                            "attachment_index": {"type": "integer", "description": "Index of attachment (default 0)"}
+                        },
+                        "required": ["message_id", "channel_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_schedule_today",
+                    "description": "Get all schedule items for today.",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_schedule_date",
+                    "description": "Get all schedule items for a specific date (YYYY-MM-DD format).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string", "description": "Date in YYYY-MM-DD format"}
+                        },
+                        "required": ["date"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_next_meeting",
+                    "description": (
+                        "Get the next upcoming meeting. If 'sub_team' is provided, filter by that subteam. "
+                        "Use this to answer questions like 'when is the next meeting' or 'what's the next Software & Electronics meeting'."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "sub_team": {"type": "string", "description": "Optional subteam filter"}
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_meeting",
+                    "description": (
+                        "Search meetings by title, description, or subteam. Use when the user references a meeting loosely."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "search_term": {"type": "string", "description": "Search query"}
+                        },
+                        "required": ["search_term"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_meeting_notes",
+                    "description": "Get meeting notes by ID. Use when answering 'what did I miss' or specific follow-ups about content.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "meeting_id": {"type": "integer", "description": "Meeting ID"}
+                        },
+                        "required": ["meeting_id"]
+                    }
+                }
+            }
         ]
 
         if include:
-            declarations = [d for d in declarations if d.name in include]
+            tools = [t for t in tools if t["function"]["name"] in include]
         if exclude:
-            declarations = [d for d in declarations if d.name not in exclude]
+            tools = [t for t in tools if t["function"]["name"] not in exclude]
 
-        return [types.Tool(function_declarations=declarations)]
-    
+        return tools
+
     async def execute_function(self, function_name: str, parameters: Dict[str, Any], *, _context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute a function by name with given parameters"""
         if function_name not in self.functions:

@@ -24,13 +24,13 @@ def load_generic_prompt() -> str:
     return load_prompt("generic")
 
 def load_lite_model_prompt() -> str:
-    """Load the complete prompt for the lite model."""
+    """Load the complete prompt for the lite model (persona only, no operational rules)."""
     generic_prompt = load_generic_prompt()
     lite_instructions = load_prompt("lite_model")
     return f"{generic_prompt}\n\n{lite_instructions}"
 
 def load_advanced_model_prompt() -> str:
-    """Load the complete prompt for the advanced model."""
+    """Load the complete prompt for the advanced model (persona only, no operational rules)."""
     generic_prompt = load_generic_prompt()
     advanced_instructions = load_prompt("advanced_model")
     return f"{generic_prompt}\n\n{advanced_instructions}"

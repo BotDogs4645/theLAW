@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 from typing import Optional
-from utils.prompt_loader import load_generic_prompt, load_lite_model_prompt, load_advanced_model_prompt, load_experience_prompt
+# Prompt loading is now handled directly in the AI cog
 
 load_dotenv()
 
@@ -49,6 +49,7 @@ GUILD_ID = get_int_env("GUILD_ID")
 VERIFIED_ROLE_ID = get_int_env("VERIFIED_ROLE_ID")
 VERIFICATION_CHANNEL_ID = get_int_env("VERIFICATION_CHANNEL_ID")
 MOD_LOG_CHANNEL_ID = get_int_env("MOD_LOG_CHANNEL_ID")
+AI_BANNED_ROLE_ID = get_int_env("AI_BANNED_ROLE_ID")
 
 # Embed configuration
 EMBED_TITLE = get_optional_env("EMBED_TITLE", "Verification")
@@ -68,7 +69,14 @@ RULES_COLOR = get_hex_color_env("RULES_COLOR", 0xFF8C00)  # Orange color
 
 # AI Configuration
 AI_ENABLED = get_bool_env("AI_ENABLED", False)
-AI_PROVIDER = get_optional_env("AI_PROVIDER", "gemini")  # "gemini" or "local"
+AI_PROVIDER = get_optional_env("AI_PROVIDER", "openai")  # "openai", "gemini", or "local"
+
+# OpenAI
+AI_OPENAI_API_KEY = get_optional_env("OPENAI_API_KEY")
+AI_OPENAI_MODEL = get_optional_env("AI_OPENAI_MODEL", "gpt-5-nano")
+AI_OPENAI_PRO_MODEL = get_optional_env("AI_OPENAI_PRO_MODEL", "gpt-5-mini")  # advanced reasoning
+
+# Gemini
 AI_GEMINI_API_KEY = get_optional_env("AI_GEMINI_API_KEY")
 AI_GEMINI_MODEL = get_optional_env("AI_GEMINI_MODEL", "gemini-2.5-flash-lite")      
 AI_GEMINI_PRO_MODEL = get_optional_env("AI_GEMINI_PRO_MODEL", "gemini-2.5-flash")  # 2.5 Flash model for complex problems
@@ -80,7 +88,7 @@ AI_TOP_P = float(get_optional_env("AI_TOP_P", "0.9"))
 AI_TOP_P_PRO = float(get_optional_env("AI_TOP_P_PRO", "0.8"))  # Slightly lower for more focused responses
 AI_REPETITION_PENALTY = float(get_optional_env("AI_REPETITION_PENALTY", "1.1"))
 AI_INCLUDE_EXPERIENCE = get_bool_env("AI_INCLUDE_EXPERIENCE", True)
-AI_INCLUDE_FOOTER = get_bool_env("AI_INCLUDE_FOOTER",  )  # Whether to append timing/token footer to replies
+AI_INCLUDE_FOOTER = get_bool_env("AI_INCLUDE_FOOTER", False)  # Whether to append timing/token footer to replies
 
 # Logging configuration
 LOG_LEVEL = get_optional_env("LOG_LEVEL", "INFO")
@@ -91,33 +99,8 @@ AI_HF_TOKEN = get_optional_env("AI_HF_TOKEN")
 AI_USE_4BIT = get_bool_env("AI_USE_4BIT", True)
 AI_USE_GPU = get_bool_env("AI_USE_GPU", True)
 
-# AI System Prompt
-def _load_system_prompt():
-    """Load the system prompt from files."""
-    try:
-        generic = load_generic_prompt()
-        lite_specific = load_lite_model_prompt()
-        parts = [generic, lite_specific]
-        return "\n\n".join([p for p in parts if p])
-    except FileNotFoundError:
-        # Fallback to hardcoded prompt if files don't exist
-        return """You are **the LAW**, a knowledgeable FRC mentor for Team 4645. Be concise, helpful, and professional."""
-
-AI_SYSTEM_PROMPT = get_optional_env("AI_SYSTEM_PROMPT", _load_system_prompt())
-
-# AI Advanced System Prompt
-def _load_advanced_system_prompt():
-    """Load the advanced system prompt from files."""
-    try:
-        generic = load_generic_prompt()
-        advanced_specific = load_advanced_model_prompt()
-        parts = [generic, advanced_specific]
-        return "\n\n".join([p for p in parts if p])
-    except FileNotFoundError:
-        # Fallback to hardcoded prompt if files don't exist
-        return """You are **the LAW**, an expert FRC mentor for Team 4645. Be accurate, concise, and respectful."""
-
-AI_ADVANCED_SYSTEM_PROMPT = get_optional_env("AI_ADVANCED_SYSTEM_PROMPT", _load_advanced_system_prompt())
+# Note: System prompts are now loaded directly in the AI cog via prompt_loader
+# This avoids duplication and makes the prompts easier to maintain
 
 # Validate required configuration
 if not TOKEN:
@@ -129,7 +112,9 @@ if not VERIFIED_ROLE_ID:
 
 # Validate AI configuration if enabled
 if AI_ENABLED:
-    if AI_PROVIDER == "gemini" and not AI_GEMINI_API_KEY:
+    if AI_PROVIDER == "openai" and not AI_OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is required when AI_PROVIDER is 'openai'")
+    elif AI_PROVIDER == "gemini" and not AI_GEMINI_API_KEY:
         raise ValueError("AI_GEMINI_API_KEY is required when AI_PROVIDER is 'gemini'")
     elif AI_PROVIDER == "local" and not AI_HF_TOKEN:
         raise ValueError("AI_HF_TOKEN is required when AI_PROVIDER is 'local'")
