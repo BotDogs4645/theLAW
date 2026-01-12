@@ -8,11 +8,16 @@ import json
 import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Set
-from utils import database, logger
+from utils import logger
+from utils.db import (
+    get_schedules_by_date_range, get_schedules_by_sub_team,
+    get_all_schedules, search_schedules, get_schedule_by_id
+)
 import logging
 from utils.enums import SubTeam
 import discord
 import aiohttp
+import config
 
 class FunctionCaller:
     """Handles function calling for AI responses"""
@@ -57,23 +62,9 @@ class FunctionCaller:
         """Register all available functions"""
         self.functions = {
             "fetch_more_messages": self._fetch_more_messages,
-            # "add_memory": self._add_memory,
-            # "update_memory": self._update_memory,
-            # "remove_memory": self._remove_memory,
-            # "get_memory": self._get_memory,
-            # "search_memories": self._search_memories,
-            # "list_memories": self._list_memories,
             "think_harder": self._think_harder,
             "upload_code_file": self._upload_code_file,
             "read_attachment_file": self._read_attachment_file,
-            "sports_search_teams": self._sports_search_teams,
-            "sports_lookup_team": self._sports_lookup_team,
-            "sports_team_next_events": self._sports_team_next_events,
-            "sports_team_last_results": self._sports_team_last_results,
-            "sports_search_players": self._sports_search_players,
-            "sports_lookup_event": self._sports_lookup_event,
-            "sports_search_events": self._sports_search_events,
-            "sports_league_table": self._sports_league_table,
             "get_schedule_today": self._get_schedule_today,
             "get_schedule_date": self._get_schedule_date,
             "get_next_meeting": self._get_next_meeting,
@@ -81,7 +72,7 @@ class FunctionCaller:
             "get_meeting_notes": self._get_meeting_notes,
         }
 
-    async def _http_get_json(self, url: str, params: Optional[Dict[str, Any]] = None, timeout_seconds: float = 10.0) -> Dict[str, Any]:
+    async def _http_get_json(self, url: str, params: Optional[Dict[str, Any]] = None, timeout_seconds: float = config.HTTP_TIMEOUT_SECONDS) -> Dict[str, Any]:
         """Perform an HTTP GET and parse JSON with error handling."""
         try:
             async with aiohttp.ClientSession() as session:
@@ -101,70 +92,6 @@ class FunctionCaller:
             self.logger.error(f"HTTP GET failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    @property
-    def _sports_api_base(self) -> str:
-        return "https://www.thesportsdb.com/api/v1/json/123"
-
-    def _trim_list(self, items: Optional[List[Any]], limit: Optional[int]) -> List[Any]:
-        if not items: return []
-        if isinstance(limit, int) and limit > 0: return items[:limit]
-        return items
-
-    def _normalize_team(self, t: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": t.get("idTeam"), "name": t.get("strTeam"), "league": t.get("strLeague")}
-
-    def _normalize_event(self, e: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": e.get("idEvent"), "date": e.get("dateEvent"), "home_team": e.get("strHomeTeam"), "away_team": e.get("strAwayTeam"), "home_score": e.get("intHomeScore"), "away_score": e.get("intAwayScore"), "status": e.get("strStatus")}
-
-    async def _sports_search_teams(self, query: str) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/searchteams.php", params={"t": query})
-        if not res.get("success"): return res
-        teams = res.get("data", {}).get("teams") or []
-        return {"success": True, "count": len(teams), "teams": [self._normalize_team(t) for t in teams]}
-
-    async def _sports_lookup_team(self, team_id: int) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/lookupteam.php", params={"id": team_id})
-        if not res.get("success"): return res
-        team = (res.get("data", {}).get("teams") or [None])[0]
-        return {"success": True, "team": self._normalize_team(team)} if team else {"success": False, "error": "Team not found"}
-
-    async def _sports_team_next_events(self, team_id: int, limit: int = 5) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/eventsnext.php", params={"id": team_id})
-        if not res.get("success"): return res
-        events = self._trim_list(res.get("data", {}).get("events"), limit)
-        return {"success": True, "count": len(events), "events": [self._normalize_event(e) for e in events]}
-
-    async def _sports_team_last_results(self, team_id: int, limit: int = 5) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/eventslast.php", params={"id": team_id})
-        if not res.get("success"): return res
-        results = self._trim_list(res.get("data", {}).get("results"), limit)
-        return {"success": True, "count": len(results), "events": [self._normalize_event(e) for e in results]}
-
-    async def _sports_search_players(self, player_name: str) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/searchplayers.php", params={"p": player_name})
-        if not res.get("success"): return res
-        players = res.get("data", {}).get("player") or []
-        return {"success": True, "count": len(players), "players": players}
-
-    async def _sports_lookup_event(self, event_id: int) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/lookupevent.php", params={"id": event_id})
-        if not res.get("success"): return res
-        event = (res.get("data", {}).get("events") or [None])[0]
-        return {"success": True, "event": self._normalize_event(event)} if event else {"success": False, "error": "Event not found"}
-
-    async def _sports_search_events(self, query: str, season: Optional[str] = None) -> Dict[str, Any]:
-        params = {"e": query}
-        if season: params["s"] = season
-        res = await self._http_get_json(f"{self._sports_api_base}/searchevents.php", params=params)
-        if not res.get("success"): return res
-        events = res.get("data", {}).get("event") or []
-        return {"success": True, "count": len(events), "events": [self._normalize_event(e) for e in events]}
-        
-    async def _sports_league_table(self, league_id: int, season: str) -> Dict[str, Any]:
-        res = await self._http_get_json(f"{self._sports_api_base}/lookuptable.php", params={"l": league_id, "s": season})
-        if not res.get("success"): return res
-        return {"success": True, "table": res.get("data", {}).get("table") or []}
-
     async def _fetch_more_messages(self, channel_id: Optional[int] = None, limit: int = 10, before_message_id: int = None, _context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
             # auto-detection of channel from execution context if not provided
@@ -181,25 +108,7 @@ class FunctionCaller:
         except Exception as e:
             self.logger.error(f"Error fetching messages: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
-    
-    async def _add_memory(self, memory_key: str, memory_content: str, memory_type: str = "general", created_by_discord_id: int = None):
-        return {"success": database.add_ai_memory(memory_key, memory_content, memory_type, created_by_discord_id)}
-    
-    async def _update_memory(self, memory_key: str, memory_content: str, memory_type: str = None):
-        return {"success": database.update_ai_memory(memory_key, memory_content, memory_type)}
-    
-    async def _remove_memory(self, memory_key: str):
-        return {"success": database.delete_ai_memory(memory_key)}
-    
-    async def _get_memory(self, memory_key: str):
-        return {"memory": database.get_ai_memory(memory_key)}
-    
-    async def _search_memories(self, search_term: str):
-        return {"memories": database.search_ai_memories(search_term)}
-    
-    async def _list_memories(self, memory_type: str = None):
-        return {"memories": database.get_all_ai_memories(memory_type)}
-    
+
     async def _think_harder(self, problem_description: str, context: str = None) -> Dict[str, Any]:
         return {"success": True, "message": "Switching to advanced reasoning mode.", "use_pro_model": True, "problem": problem_description, "context": context}
     
@@ -225,7 +134,7 @@ class FunctionCaller:
             if not msg.attachments or attachment_index >= len(msg.attachments):
                 return {"success": False, "error": "Attachment not found"}
             att = msg.attachments[attachment_index]
-            if att.size > 5000: return {"success": False, "error": "Attachment too large (must be <= 5KB)"}
+            if att.size > config.ATTACHMENT_MAX_SIZE_BYTES: return {"success": False, "error": f"Attachment too large (must be <= {config.ATTACHMENT_MAX_SIZE_BYTES // 1000}KB)"}
             
             content = (await att.read()).decode('utf-8', errors='replace')
             return {"success": True, "filename": att.filename, "content": content}
@@ -240,7 +149,7 @@ class FunctionCaller:
             start_of_day = datetime.combine(today, datetime.min.time()).isoformat()
             end_of_day = datetime.combine(today, datetime.max.time()).isoformat()
             
-            schedules = database.get_schedules_by_date_range(start_of_day, end_of_day)
+            schedules = get_schedules_by_date_range(start_of_day, end_of_day)
             
             return {
                 "success": True,
@@ -259,7 +168,7 @@ class FunctionCaller:
             start_of_day = datetime.combine(target_date, datetime.min.time()).isoformat()
             end_of_day = datetime.combine(target_date, datetime.max.time()).isoformat()
             
-            schedules = database.get_schedules_by_date_range(start_of_day, end_of_day)
+            schedules = get_schedules_by_date_range(start_of_day, end_of_day)
             
             return {
                 "success": True,
@@ -284,9 +193,9 @@ class FunctionCaller:
                         "success": False, 
                         "error": f"Invalid subteam: {sub_team}. Valid options: {SubTeam.get_all_values()}"
                     }
-                schedules = database.get_schedules_by_sub_team(sub_team)
+                schedules = get_schedules_by_sub_team(sub_team)
             else:
-                schedules = database.get_all_schedules()
+                schedules = get_all_schedules()
             
             # filter for future meetings and sort by start time
             upcoming = [s for s in schedules if s['starts_at'] > now]
@@ -311,7 +220,7 @@ class FunctionCaller:
     async def _find_meeting(self, search_term: str) -> Dict[str, Any]:
         """Find meetings by searching title, description, or subteam"""
         try:
-            schedules = database.search_schedules(search_term)
+            schedules = search_schedules(search_term)
             
             return {
                 "success": True,
@@ -326,7 +235,7 @@ class FunctionCaller:
     async def _get_meeting_notes(self, meeting_id: int) -> Dict[str, Any]:
         """Get notes for a specific meeting by ID (for 'what did I miss' questions)"""
         try:
-            schedule = database.get_schedule_by_id(meeting_id, include_notes=True)
+            schedule = get_schedule_by_id(meeting_id, include_notes=True)
             
             if not schedule:
                 return {

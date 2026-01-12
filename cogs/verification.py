@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord.ui import View, Button, Modal, TextInput
 import re
 from utils.logger import log_attempt
-from utils import database
+from utils.db import is_user_verified, is_name_taken, is_email_verified, add_verified_user
 from utils.cog_base import BaseCog
 import config
 from typing import Optional
@@ -107,11 +107,11 @@ class VerificationModal(Modal, title="Verify Your Identity"):
             return await log_attempt(self.bot, interaction, f"{name_input} ({email_input})", f"Attempt failed: {error_message}", success=False)
 
         # check if user is already verified
-        if database.is_user_verified(member.id):
+        if is_user_verified(member.id):
             return await self.handle_verification_failure(interaction, name_input, email_input, "User is already verified.")
 
         # check if email is already verified by another user
-        if database.is_email_verified(email_input):
+        if is_email_verified(email_input):
             return await self.handle_verification_failure(interaction, name_input, email_input, "Email already verified by another user.")
 
         # look up student by email
@@ -127,7 +127,10 @@ class VerificationModal(Modal, title="Verify Your Identity"):
         roles_added_names, nickname_status = await self.assign_roles_and_nickname(interaction, member, student_data)
         
         # save to database
-        assigned_role_ids = [role.id for role in interaction.guild.get_role(config.VERIFIED_ROLE_ID) and [interaction.guild.get_role(config.VERIFIED_ROLE_ID)] or []]
+        assigned_role_ids = []
+        verified_role = interaction.guild.get_role(config.VERIFIED_ROLE_ID)
+        if verified_role:
+            assigned_role_ids.append(verified_role.id)
         for team in student_data['teams']:
             role_id = self.bot.role_map.get(team)
             if role_id:
@@ -135,7 +138,7 @@ class VerificationModal(Modal, title="Verify Your Identity"):
                 if role:
                     assigned_role_ids.append(role.id)
         
-        database.add_verified_user(member.id, lower_name, email_input, assigned_role_ids)
+        add_verified_user(member.id, lower_name, email_input, assigned_role_ids)
         
         # send success message
         await self._send_success_message(interaction, roles_added_names, nickname_status)

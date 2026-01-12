@@ -1,6 +1,6 @@
 import csv
 import json
-from utils.database import get_all_students, setup_database
+from utils.db import get_all_students, setup_database
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

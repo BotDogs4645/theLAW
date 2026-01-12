@@ -3,7 +3,8 @@ from discord.ext import commands
 import os
 import asyncio
 import config
-from utils import data_loader, database, logger
+from utils import data_loader, logger
+from utils.db import setup_database
 
 
 class VerificationBot(commands.Bot):
@@ -61,7 +62,7 @@ class VerificationBot(commands.Bot):
             rules_found = False
             verify_found = False
             
-            async for message in channel.history(limit=20):
+            async for message in channel.history(limit=config.VERIFICATION_HISTORY_LIMIT):
                 if message.author == self.user:
                     # detect rules embed by title
                     if message.embeds:
@@ -176,7 +177,7 @@ async def main():
         logger.setup_logging()
         
         # setup database
-        database.setup_database()
+        setup_database()
         
         # start the bot
         async with bot:

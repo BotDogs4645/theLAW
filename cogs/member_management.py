@@ -5,7 +5,10 @@ import discord
 from discord.ext import commands
 from utils.cog_base import BaseCog, slash_admin_only
 from discord import app_commands
-from utils import database, logger, data_loader
+from utils import logger, data_loader
+from utils.db import (
+    is_user_verified, delete_verified_user, get_all_verified_users, update_verified_user_roles
+)
 
 class MemberManagementCog(BaseCog):
     """Cog for handling member join/leave events and related management"""
@@ -19,8 +22,8 @@ class MemberManagementCog(BaseCog):
         self.logger.info(f"Member left: {member.name} ({member.id})")
         
         # check if the user was verified and delete their record
-        if database.is_user_verified(member.id):
-            success = database.delete_verified_user(member.id)
+        if is_user_verified(member.id):
+            success = delete_verified_user(member.id)
             if success:
                 self.logger.info(f"Successfully deleted verified user record for {member.name} ({member.id})")
             else:
@@ -49,7 +52,7 @@ class MemberManagementCog(BaseCog):
         students_by_email = {s.get('email').lower(): s for s in self.bot.students.values() if s.get('email')}
         role_map = getattr(self.bot, 'role_map', {}) or {}
 
-        verified_users = database.get_all_verified_users()
+        verified_users = get_all_verified_users()
         updated_count = 0
         checked_count = 0
         missing_members = 0
@@ -94,7 +97,7 @@ class MemberManagementCog(BaseCog):
                     updated_count += 1
                     # update stored roles snapshot
                     new_role_ids = [r.id for r in desired_roles]
-                    database.update_verified_user_roles(discord_id, new_role_ids, checked_only=False)
+                    update_verified_user_roles(discord_id, new_role_ids, checked_only=False)
                 except discord.Forbidden:
                     self.logger.warning(f"Insufficient permissions to modify roles for {member} ({member.id})")
                 except Exception as e:
@@ -102,7 +105,7 @@ class MemberManagementCog(BaseCog):
             else:
                 # still record check timestamp
                 snapshot_ids = [r.id for r in desired_roles]
-                database.update_verified_user_roles(discord_id, snapshot_ids, checked_only=True)
+                update_verified_user_roles(discord_id, snapshot_ids, checked_only=True)
                 checked_count += 1
 
         await interaction.followup.send(

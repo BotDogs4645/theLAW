@@ -2,7 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.cog_base import BaseCog, slash_admin_only
-from utils import logger, function_caller, prompt_loader, database, ai_conversation
+from utils import logger, function_caller, prompt_loader, ai_conversation
+from utils.db import start_ai_interaction, complete_ai_interaction, get_db_connection
 import asyncio
 import time
 import io
@@ -56,7 +57,7 @@ class AIMentionCog(BaseCog):
         loop_start_time = time.time()
         executed_tools: List[Dict[str, Any]] = []
         wants_escalation = False
-        max_tool_cycles = 5
+        max_tool_cycles = config.MAX_TOOL_CYCLES
 
         model_name = config.AI_OPENAI_PRO_MODEL if pro else config.AI_OPENAI_MODEL
         tools = self.function_caller.get_openai_tools(include=allowed_functions)
@@ -133,7 +134,7 @@ class AIMentionCog(BaseCog):
 
         async with message.channel.typing():
             start_time = time.time()
-            history = await self._get_recent_messages(message.channel, limit=5, before=message)
+            history = await self._get_recent_messages(message.channel, limit=config.CHANNEL_HISTORY_LIMIT, before=message)
 
             exec_context = {
                 "guild_id": message.guild.id if message.guild else None,
@@ -143,7 +144,7 @@ class AIMentionCog(BaseCog):
                 "last_user_text": question,
             }
 
-            interaction_id = database.start_ai_interaction(
+            interaction_id = start_ai_interaction(
                 guild_id=exec_context["guild_id"], channel_id=exec_context["channel_id"],
                 author_id=exec_context["author_id"], message_id=exec_context["message_id"],
                 question=question,
@@ -157,8 +158,7 @@ class AIMentionCog(BaseCog):
                 pro=False, message_id=message.id, bot_user_id=self.bot.user.id,
                 prompt_loader=prompt_loader
             )
-            lite_allowed_tools = {"read_attachment_file", "get_schedule_today", "get_schedule_date", "get_next_meeting",
-                                  "find_meeting", "get_meeting_notes", "think_harder"}
+            lite_allowed_tools = config.AI_LITE_ALLOWED_TOOLS
 
             final_text, ms1, executed1, wants_escalation = await self._run_conversation_loop(
                 messages=lite_messages, pro=False, allowed_functions=lite_allowed_tools, context=exec_context
@@ -191,7 +191,7 @@ class AIMentionCog(BaseCog):
 
             await self._maybe_handle_uploads(message, final_executed)
 
-            database.complete_ai_interaction(
+            complete_ai_interaction(
                 interaction_id, pro_mode=pro_used,
                 model_name=(config.AI_OPENAI_PRO_MODEL if pro_used else config.AI_OPENAI_MODEL),
                 response_text=final_text, total_elapsed_ms=(time.time() - start_time) * 1000.0,
@@ -260,7 +260,7 @@ class AIMentionCog(BaseCog):
 
     async def _send_long_ephemeral(self, interaction: discord.Interaction, text: str):
         # This function is unchanged.
-        chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
+        chunks = [text[i:i + config.DISCORD_MESSAGE_CHUNK_SIZE] for i in range(0, len(text), config.DISCORD_MESSAGE_CHUNK_SIZE)]
         first = True
         for chunk in chunks:
             msg = f"```\n{chunk}\n```"
@@ -293,7 +293,7 @@ class AIMentionCog(BaseCog):
                 pass
 
         if not target_msg_id:
-            async for m in channel.history(limit=50):
+            async for m in channel.history(limit=config.INSPECT_HISTORY_LIMIT):
                 if m.author.id == self.bot.user.id and m.reference and m.reference.message_id:
                     target_msg_id = m.reference.message_id
                     break
@@ -302,7 +302,7 @@ class AIMentionCog(BaseCog):
             await interaction.followup.send("Could not find a recent AI interaction to inspect.", ephemeral=True)
             return
 
-        with database.get_db_connection() as conn:
+        with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM ai_interactions WHERE message_id = ? ORDER BY id DESC LIMIT 1", (target_msg_id,))
             row = cur.fetchone()
@@ -314,7 +314,7 @@ class AIMentionCog(BaseCog):
         interaction_row = dict(row)
         interaction_id = interaction_row.get("id")
 
-        with database.get_db_connection() as conn:
+        with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM ai_gemini_calls WHERE interaction_id = ? ORDER BY id ASC", (interaction_id,))
             gemini_calls = [dict(r) for r in cur.fetchall()]

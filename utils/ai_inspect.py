@@ -10,7 +10,7 @@ REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from utils import database  # noqa: E402
+from utils.db import get_db_connection, DB_FILE  # noqa: E402
 
 
 def _truncate(value: str, max_len: int = 500) -> str:
@@ -35,13 +35,13 @@ def _ensure_db_path():
     """Make sure database connections use the repo's sqlite file regardless of CWD."""
     db_path = os.path.join(REPO_ROOT, 'verified_users.db')
     try:
-        database.DB_FILE = db_path
+        DB_FILE = db_path
     except Exception:
         pass
 
 
 def _find_interaction_id_by_message_id(message_id: int) -> Optional[int]:
-    with database.get_db_connection() as conn:
+    with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -57,7 +57,7 @@ def _find_interaction_id_by_message_id(message_id: int) -> Optional[int]:
 
 
 def _load_interaction(interaction_id: int) -> Optional[dict]:
-    with database.get_db_connection() as conn:
+    with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM ai_interactions WHERE id = ?", (interaction_id,))
         row = cur.fetchone()
@@ -65,7 +65,7 @@ def _load_interaction(interaction_id: int) -> Optional[dict]:
 
 
 def _load_gemini_calls(interaction_id: int) -> list:
-    with database.get_db_connection() as conn:
+    with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM ai_gemini_calls WHERE interaction_id = ? ORDER BY id ASC",
@@ -75,7 +75,7 @@ def _load_gemini_calls(interaction_id: int) -> list:
 
 
 def _load_function_calls(interaction_id: int) -> list:
-    with database.get_db_connection() as conn:
+    with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM ai_function_calls WHERE interaction_id = ? ORDER BY sequence_index ASC, id ASC",
@@ -85,7 +85,7 @@ def _load_function_calls(interaction_id: int) -> list:
 
 
 def _load_discord_steps(interaction_id: int) -> list:
-    with database.get_db_connection() as conn:
+    with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM ai_discord_steps WHERE interaction_id = ? ORDER BY id ASC",

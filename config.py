@@ -102,6 +102,21 @@ AI_USE_GPU = get_bool_env("AI_USE_GPU", True)
 # Note: System prompts are now loaded directly in the AI cog via prompt_loader
 # This avoids duplication and makes the prompts easier to maintain
 
+# Operational Limits
+CHANNEL_HISTORY_LIMIT = get_int_env("CHANNEL_HISTORY_LIMIT", 5)
+MAX_TOOL_CYCLES = get_int_env("MAX_TOOL_CYCLES", 5)
+HTTP_TIMEOUT_SECONDS = float(get_optional_env("HTTP_TIMEOUT_SECONDS", "10.0"))
+ATTACHMENT_MAX_SIZE_BYTES = get_int_env("ATTACHMENT_MAX_SIZE_BYTES", 5000)
+DISCORD_MESSAGE_CHUNK_SIZE = get_int_env("DISCORD_MESSAGE_CHUNK_SIZE", 1900)
+INSPECT_HISTORY_LIMIT = get_int_env("INSPECT_HISTORY_LIMIT", 50)
+VERIFICATION_HISTORY_LIMIT = get_int_env("VERIFICATION_HISTORY_LIMIT", 20)
+
+# AI Tool Configuration
+AI_LITE_ALLOWED_TOOLS = {
+    "read_attachment_file", "get_schedule_today", "get_schedule_date",
+    "get_next_meeting", "find_meeting", "get_meeting_notes", "think_harder"
+}
+
 # Validate required configuration
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN is required")

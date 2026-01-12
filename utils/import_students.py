@@ -14,7 +14,7 @@ from typing import List, Dict, Optional
 # add the parent directory to the path so we can import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.database import setup_database, add_or_update_student, get_all_students, get_all_verified_users, update_verified_user_roles
+from utils.db import setup_database, add_or_update_student, get_all_students, get_all_verified_users, update_verified_user_roles
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
